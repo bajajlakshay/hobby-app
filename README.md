@@ -1,56 +1,109 @@
-# Welcome to your Expo app 👋
+# HobbyApp (mobile)
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Expo / React Native client for HobbyApp — a notes and tasks app with
+authentication. Users can write **notes** that mix typed text and handwriting on
+one page, and keep **tasks** with done/remaining checklists. Backed by the
+[HobbyApp backend](../hobby-app-backend) (.NET + PostgreSQL).
 
-## Get started
+## Tech stack
 
-1. Install dependencies
+- **Expo SDK 56** / **React Native 0.85** / **React 19.2**
+- **expo-router** (file-based routing, typed routes)
+- **TypeScript**
+- `expo-secure-store` (token storage), `react-native-svg` (handwriting strokes)
 
-   ```bash
-   npm install
-   ```
+> ⚠️ Expo SDK 56 moves fast — read the versioned docs at
+> https://docs.expo.dev/versions/v56.0.0/ before changing native/config code
+> (see `AGENTS.md`).
 
-2. Start the app
+## Features
 
-   ```bash
-   npx expo start
-   ```
+- **Auth** — email/password register & login with JWT access + refresh tokens.
+  Tokens are stored securely (Keychain/Keystore on native, `localStorage` on web)
+  and access tokens refresh automatically on expiry.
+- **Notes** — a block-based "mixed canvas": add typed-text blocks and handwriting
+  blocks (vector ink via `react-native-svg`) in the same note. Color labels,
+  pin, archive, trash/restore, and search.
+- **Tasks** — title + checklist items you can tick off, with a progress bar.
 
-In the output, you'll find options to open the app in a
+## Project structure
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```
+src/
+├── app/                      # expo-router routes
+│   ├── _layout.tsx           # SessionProvider + auth-guarded Stack
+│   ├── (auth)/               # sign-in / sign-up (signed out)
+│   └── (app)/                # signed-in area
+│       ├── (tabs)/           # Notes + Tasks tabs
+│       ├── note/[id].tsx     # note editor (mixed canvas)
+│       └── task/[id].tsx     # task editor (checklist)
+├── services/
+│   ├── api/client.ts         # fetch wrapper + error handling
+│   ├── auth/                 # SessionProvider, auth API, secure storage
+│   ├── notes/                # notes API + types
+│   └── tasks/                # tasks API + types
+├── components/               # themed UI, drawing canvas, note card, ...
+├── constants/                # theme, colors, API config
+└── hooks/
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Routing is guarded with `Stack.Protected`: the `(auth)` group shows when signed
+out, the `(app)` group when signed in — switching happens automatically from the
+session state.
 
-### Other setup steps
+## Prerequisites
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+- [Node.js](https://nodejs.org/) and npm
+- The [HobbyApp backend](../hobby-app-backend) running and reachable
+- Android Studio / Xcode for native builds (or a device with a dev build)
 
-## Learn more
+## Getting started
 
-To learn more about developing your project with Expo, look at the following resources:
+```bash
+# 1. Install dependencies
+npm install
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+# 2. Point the app at your backend (see Configuration below)
+#    e.g. create a .env with EXPO_PUBLIC_API_URL
 
-## Join the community
+# 3. Start the dev server
+npx expo start
+```
 
-Join our community of developers creating universal apps.
+Then open a [development build](https://docs.expo.dev/develop/development-builds/introduction/),
+Android emulator, or iOS simulator. The custom app icon and splash require a
+native build (`npx expo run:android` / `run:ios`) — they don't appear in Expo Go.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+### Scripts
+
+| Command | Description |
+|---|---|
+| `npm start` | Start the Metro dev server |
+| `npm run android` | Build & run on Android |
+| `npm run ios` | Build & run on iOS |
+| `npm run web` | Run in the browser |
+| `npm run lint` | Lint with Expo ESLint |
+
+## Configuration
+
+The backend base URL is resolved in `src/constants/config.ts`:
+
+- Defaults to `http://10.0.2.2:5169` (Android emulator) / `http://localhost:5169`
+  (iOS simulator & web).
+- Override with the **`EXPO_PUBLIC_API_URL`** environment variable (inlined at
+  build time). For a **physical device**, set your machine's LAN IP, e.g.:
+
+  ```
+  EXPO_PUBLIC_API_URL=http://192.168.1.x:5169
+  ```
+
+Use plain **HTTP** for local device development — the backend's dev HTTPS
+certificate is `localhost`-only and untrusted on a phone.
+
+## Notes on native builds
+
+- This project includes a committed `android/` folder (app id `com.badmist.hobbyapp`).
+- After changing `app.json` icon/splash/config, regenerate native assets with
+  `npx expo prebuild -p android` and rebuild.
+- Icons and splash screens are baked in at build time and won't update via Fast
+  Refresh or in Expo Go.
