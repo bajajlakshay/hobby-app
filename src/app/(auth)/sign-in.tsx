@@ -1,4 +1,4 @@
-import { Link } from 'expo-router';
+import { Link, router } from 'expo-router';
 import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -25,10 +25,16 @@ export default function SignInScreen() {
     }
     setError(null);
     setSubmitting(true);
+    const trimmedEmail = email.trim();
     try {
       // On success the session updates and the root guard switches to (app).
-      await signIn(email.trim(), password);
+      await signIn(trimmedEmail, password);
     } catch (e) {
+      // 403 => credentials are valid but the email isn't verified yet.
+      if (e instanceof ApiError && e.status === 403) {
+        router.push({ pathname: '/verify', params: { email: trimmedEmail, autoResend: '1' } });
+        return;
+      }
       setError(e instanceof ApiError ? e.errors.join('\n') : 'Something went wrong. Please try again.');
     } finally {
       setSubmitting(false);

@@ -24,7 +24,12 @@ interface SessionContextValue {
   isAuthenticated: boolean;
   isLoading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
+  /** Creates the account and triggers an OTP email. Does NOT sign in yet. */
   signUp: (email: string, password: string) => Promise<void>;
+  /** Verifies the emailed OTP; on success the session becomes authenticated. */
+  verifyEmail: (email: string, code: string) => Promise<void>;
+  /** Re-sends a verification code for an unverified account. */
+  resendOtp: (email: string) => Promise<void>;
   signOut: () => Promise<void>;
   /** Authenticated request helper: injects the bearer token and refreshes on 401. */
   authFetch: <T>(path: string, options?: Omit<RequestOptions, 'token'>) => Promise<T>;
@@ -133,14 +138,24 @@ export function SessionProvider({ children }: PropsWithChildren) {
     [persistTokens],
   );
 
-  const signUp = useCallback(
-    async (email: string, password: string) => {
-      const tokens = await authApi.register({ email, password });
+  const signUp = useCallback(async (email: string, password: string) => {
+    // Creates the account and emails an OTP; the caller routes to verification.
+    // No tokens are issued until the email is verified.
+    await authApi.register({ email, password });
+  }, []);
+
+  const verifyEmail = useCallback(
+    async (email: string, code: string) => {
+      const tokens = await authApi.verifyEmail(email, code);
       await persistTokens(tokens);
       setUser(await authApi.me(tokens.accessToken));
     },
     [persistTokens],
   );
+
+  const resendOtp = useCallback(async (email: string) => {
+    await authApi.resendOtp(email);
+  }, []);
 
   const signOut = useCallback(async () => {
     const current = tokensRef.current;
@@ -162,10 +177,12 @@ export function SessionProvider({ children }: PropsWithChildren) {
       isLoading,
       signIn,
       signUp,
+      verifyEmail,
+      resendOtp,
       signOut,
       authFetch,
     }),
-    [user, isLoading, signIn, signUp, signOut, authFetch],
+    [user, isLoading, signIn, signUp, verifyEmail, resendOtp, signOut, authFetch],
   );
 
   return <SessionContext value={value}>{children}</SessionContext>;

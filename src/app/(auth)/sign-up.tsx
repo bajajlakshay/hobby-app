@@ -1,4 +1,4 @@
-import { Link } from 'expo-router';
+import { Link, router } from 'expo-router';
 import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -28,9 +28,11 @@ export default function SignUpScreen() {
     }
     setError(null);
     setSubmitting(true);
+    const trimmedEmail = email.trim();
     try {
-      // On success the session updates and the root guard switches to (app).
-      await signUp(email.trim(), password);
+      // Creates the account + sends an OTP, then routes to email verification.
+      await signUp(trimmedEmail, password);
+      router.push({ pathname: '/verify', params: { email: trimmedEmail } });
     } catch (e) {
       setError(e instanceof ApiError ? e.errors.join('\n') : 'Something went wrong. Please try again.');
     } finally {

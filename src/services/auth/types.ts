@@ -9,6 +9,12 @@ export interface AuthResponse {
 /** Tokens as persisted on the device. */
 export type AuthTokens = AuthResponse;
 
+/** Returned by register / resend: the account needs email OTP verification. */
+export interface VerificationRequired {
+  requiresVerification?: boolean;
+  email: string;
+}
+
 /** Shape returned by GET /api/auth/me. */
 export interface User {
   userId: string;
