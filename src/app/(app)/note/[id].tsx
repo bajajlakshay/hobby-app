@@ -1,5 +1,5 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -14,15 +14,56 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { DrawingCanvas } from '@/components/notes/drawing-canvas';
 import { ThemedText } from '@/components/themed-text';
+import { confirmDestructive } from '@/components/ui/confirm';
+import { Icon } from '@/components/ui/icon';
 import { NoteColoredTextColor, NoteColors, PenColors, PenWidths } from '@/constants/notes';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotesApi } from '@/services/notes/notes-api';
-import { parseNote, type NoteDoc, type NoteKind, type Stroke } from '@/services/notes/types';
+import {
+  parseNote,
+  type DrawingCanvasInfo,
+  type NoteDoc,
+  type NoteKind,
+  type SaveNotePayload,
+  type Stroke,
+} from '@/services/notes/types';
+
+/** Autosave delay after the last keystroke; writes are local, so this is cheap. */
+const AUTOSAVE_MS = 800;
+
+function makePayload(
+  kind: NoteKind,
+  title: string,
+  text: string,
+  strokes: Stroke[],
+  canvas: DrawingCanvasInfo | null,
+  color: string | null,
+): SaveNotePayload {
+  const doc: NoteDoc =
+    kind === 'text'
+      ? { kind: 'text', text }
+      : { kind: 'drawing', strokes, ...(canvas ? { canvas } : {}) };
+  return {
+    title: title.trim(),
+    content: JSON.stringify(doc),
+    plainText: kind === 'text' ? text.trim() : '',
+    color,
+  };
+}
+
+function payloadIsEmpty(payload: SaveNotePayload): boolean {
+  if (payload.title.length > 0) {
+    return false;
+  }
+  const doc = parseNote(payload.content);
+  return doc.kind === 'text' ? doc.text.trim().length === 0 : doc.strokes.length === 0;
+}
 
 export default function NoteEditorScreen() {
   const theme = useTheme();
   const router = useRouter();
+  const navigation = useNavigation();
   const api = useNotesApi();
   const { id, kind: kindParam } = useLocalSearchParams<{ id: string; kind?: string }>();
   const isNew = id === 'new';
@@ -32,6 +73,7 @@ export default function NoteEditorScreen() {
   const [title, setTitle] = useState('');
   const [text, setText] = useState('');
   const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const [canvasInfo, setCanvasInfo] = useState<DrawingCanvasInfo | null>(null);
   const [color, setColor] = useState<string | null>(null);
   const [isPinned, setIsPinned] = useState(false);
   const [isArchived, setIsArchived] = useState(false);
@@ -40,6 +82,51 @@ export default function NoteEditorScreen() {
   const [loading, setLoading] = useState(!isNew);
   const [showColors, setShowColors] = useState(false);
 
+  // --- persistence ----------------------------------------------------------
+  // Saves are serialized through a chain (so a slow create can't race a second
+  // create) and skipped when nothing changed since the last successful save.
+  const noteIdRef = useRef<string | null>(isNew ? null : id);
+  const lastSavedRef = useRef<string | null>(null);
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const discardRef = useRef(false);
+
+  const payload = makePayload(kind, title, text, strokes, canvasInfo, color);
+  const payloadRef = useRef(payload);
+
+  const saveNow = useCallback((): Promise<void> => {
+    const run = async () => {
+      if (discardRef.current) {
+        return;
+      }
+      const current = payloadRef.current;
+      const serialized = JSON.stringify(current);
+      if (serialized === lastSavedRef.current) {
+        return;
+      }
+      if (noteIdRef.current) {
+        await api.update(noteIdRef.current, current);
+      } else {
+        if (payloadIsEmpty(current)) {
+          return;
+        }
+        const created = await api.create(current);
+        noteIdRef.current = created.id;
+        setNoteId(created.id);
+      }
+      lastSavedRef.current = serialized;
+    };
+    const next = saveChainRef.current.then(run, run);
+    saveChainRef.current = next.catch(() => {});
+    return next;
+  }, [api]);
+
+  const saveNowRef = useRef(saveNow);
+  useEffect(() => {
+    payloadRef.current = payload;
+    saveNowRef.current = saveNow;
+  });
+
+  // Load an existing note.
   useEffect(() => {
     if (isNew) {
       return;
@@ -57,12 +144,24 @@ export default function NoteEditorScreen() {
           setText(doc.text);
         } else {
           setStrokes(doc.strokes);
+          setCanvasInfo(doc.canvas ?? null);
         }
         setTitle(note.title);
         setColor(note.color);
         setIsPinned(note.isPinned);
         setIsArchived(note.isArchived);
         setIsTrashed(note.isTrashed);
+        // Seed the dirty check so autosave doesn't rewrite an unchanged note.
+        lastSavedRef.current = JSON.stringify(
+          makePayload(
+            doc.kind,
+            note.title,
+            doc.kind === 'text' ? doc.text : '',
+            doc.kind === 'drawing' ? doc.strokes : [],
+            doc.kind === 'drawing' ? (doc.canvas ?? null) : null,
+            note.color,
+          ),
+        );
       } catch {
         router.back();
       } finally {
@@ -74,49 +173,42 @@ export default function NoteEditorScreen() {
     return () => {
       active = false;
     };
-  }, [api, id, isNew, router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, isNew]);
+
+  // Debounced autosave on any edit.
+  const serialized = JSON.stringify(payload);
+  useEffect(() => {
+    if (loading || serialized === lastSavedRef.current) {
+      return;
+    }
+    const handle = setTimeout(() => void saveNowRef.current(), AUTOSAVE_MS);
+    return () => clearTimeout(handle);
+  }, [serialized, loading]);
+
+  // The system back gesture/button bypasses our back button — flush unsaved
+  // edits as the screen goes away. The write is local SQLite, so it completes
+  // even after the screen unmounts.
+  useEffect(() => {
+    return navigation.addListener('beforeRemove', () => {
+      void saveNowRef.current();
+    });
+  }, [navigation]);
 
   const contentColor = color ? NoteColoredTextColor : theme.text;
   const placeholderColor = color ? '#6B7280' : theme.textSecondary;
   const backgroundColor = color ?? theme.background;
 
-  const isEmpty = useMemo(() => {
-    if (title.trim().length > 0) {
-      return false;
-    }
-    return kind === 'text' ? text.trim().length === 0 : strokes.length === 0;
-  }, [title, kind, text, strokes]);
-
-  // --- persistence ---
-  const buildPayload = useCallback(() => {
-    const doc: NoteDoc = kind === 'text' ? { kind: 'text', text } : { kind: 'drawing', strokes };
-    return {
-      title: title.trim(),
-      content: JSON.stringify(doc),
-      plainText: kind === 'text' ? text.trim() : '',
-      color,
-    };
-  }, [kind, text, strokes, title, color]);
-
   const ensureSaved = useCallback(async (): Promise<string | null> => {
-    const payload = buildPayload();
-    if (noteId) {
-      await api.update(noteId, payload);
-      return noteId;
-    }
-    if (isEmpty) {
-      return null;
-    }
-    const created = await api.create(payload);
-    setNoteId(created.id);
-    return created.id;
-  }, [api, buildPayload, isEmpty, noteId]);
+    await saveNow();
+    return noteIdRef.current;
+  }, [saveNow]);
 
   const goBackSaving = useCallback(async () => {
     try {
       await ensureSaved();
     } catch {
-      // Surface nothing here; navigation still proceeds.
+      // Local write failed; nothing more we can do — navigation still proceeds.
     } finally {
       router.back();
     }
@@ -155,9 +247,20 @@ export default function NoteEditorScreen() {
   };
 
   const deletePermanently = async () => {
-    if (noteId) {
-      await api.remove(noteId);
+    if (!noteId) {
+      router.back();
+      return;
     }
+    const confirmed = await confirmDestructive({
+      title: 'Delete note forever?',
+      message: 'This can’t be undone.',
+      confirmLabel: 'Delete',
+    });
+    if (!confirmed) {
+      return;
+    }
+    discardRef.current = true;
+    await api.remove(noteId);
     router.back();
   };
 
@@ -172,8 +275,8 @@ export default function NoteEditorScreen() {
   return (
     <SafeAreaView style={[styles.flex, { backgroundColor }]} edges={['top', 'bottom']}>
       <View style={styles.toolbar}>
-        <Pressable hitSlop={8} onPress={goBackSaving}>
-          <ThemedText style={[styles.toolIcon, { color: contentColor }]}>‹</ThemedText>
+        <Pressable hitSlop={8} onPress={goBackSaving} style={styles.toolButton}>
+          <Icon name="back" size={22} color={contentColor} />
         </Pressable>
 
         <View style={styles.toolbarActions}>
@@ -184,17 +287,17 @@ export default function NoteEditorScreen() {
             </>
           ) : (
             <>
-              <Pressable hitSlop={8} onPress={togglePin}>
-                <ThemedText style={[styles.toolEmoji, { opacity: isPinned ? 1 : 0.4 }]}>📌</ThemedText>
+              <Pressable hitSlop={8} onPress={togglePin} style={styles.toolButton}>
+                <Icon name="pin" size={20} color={contentColor} style={{ opacity: isPinned ? 1 : 0.35 }} />
               </Pressable>
-              <Pressable hitSlop={8} onPress={() => setShowColors((s) => !s)}>
-                <ThemedText style={styles.toolEmoji}>🎨</ThemedText>
+              <Pressable hitSlop={8} onPress={() => setShowColors((s) => !s)} style={styles.toolButton}>
+                <Icon name="palette" size={20} color={contentColor} />
               </Pressable>
-              <Pressable hitSlop={8} onPress={archive}>
-                <ThemedText style={styles.toolEmoji}>{isArchived ? '🗄️' : '📥'}</ThemedText>
+              <Pressable hitSlop={8} onPress={archive} style={styles.toolButton}>
+                <Icon name={isArchived ? 'unarchive' : 'archive'} size={20} color={contentColor} />
               </Pressable>
-              <Pressable hitSlop={8} onPress={trash}>
-                <ThemedText style={styles.toolEmoji}>🗑️</ThemedText>
+              <Pressable hitSlop={8} onPress={trash} style={styles.toolButton}>
+                <Icon name="trash" size={20} color={contentColor} />
               </Pressable>
             </>
           )}
@@ -249,6 +352,10 @@ export default function NoteEditorScreen() {
         <DrawingNoteBody
           strokes={strokes}
           onChangeStrokes={setStrokes}
+          canvasInfo={canvasInfo}
+          onAdoptCanvas={(size) =>
+            setCanvasInfo({ ...size, background: theme.backgroundElement })
+          }
           contentColor={contentColor}
           dividerColor={theme.backgroundSelected}
         />
@@ -262,11 +369,15 @@ export default function NoteEditorScreen() {
 function DrawingNoteBody({
   strokes,
   onChangeStrokes,
+  canvasInfo,
+  onAdoptCanvas,
   contentColor,
   dividerColor,
 }: {
   strokes: Stroke[];
   onChangeStrokes: (strokes: Stroke[]) => void;
+  canvasInfo: DrawingCanvasInfo | null;
+  onAdoptCanvas: (size: { width: number; height: number }) => void;
   contentColor: string;
   dividerColor: string;
 }) {
@@ -276,6 +387,19 @@ function DrawingNoteBody({
   const [canvasHeight, setCanvasHeight] = useState(0);
 
   const onLayout = (e: LayoutChangeEvent) => setCanvasHeight(e.nativeEvent.layout.height);
+
+  const clearAll = async () => {
+    if (strokes.length === 0) {
+      return;
+    }
+    const confirmed = await confirmDestructive({
+      title: 'Clear the whole drawing?',
+      confirmLabel: 'Clear',
+    });
+    if (confirmed) {
+      onChangeStrokes([]);
+    }
+  };
 
   return (
     <View style={styles.flex}>
@@ -287,6 +411,9 @@ function DrawingNoteBody({
             color={penColor}
             strokeWidth={penWidth}
             height={canvasHeight}
+            canvas={canvasInfo}
+            onAdoptCanvas={onAdoptCanvas}
+            background={canvasInfo?.background}
           />
         )}
       </View>
@@ -320,12 +447,13 @@ function DrawingNoteBody({
           ))}
         </View>
         <View style={styles.penGroup}>
-          <ToolButton
-            label="Undo"
-            color={theme.textSecondary}
+          <Pressable
+            hitSlop={6}
             onPress={() => onChangeStrokes(strokes.slice(0, -1))}
-          />
-          <ToolButton label="Clear" color={theme.textSecondary} onPress={() => onChangeStrokes([])} />
+            style={styles.toolButton}>
+            <Icon name="undo" size={20} color={theme.textSecondary} />
+          </Pressable>
+          <ToolButton label="Clear" color={theme.textSecondary} onPress={clearAll} />
         </View>
       </View>
     </View>
@@ -370,13 +498,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.three,
   },
-  toolIcon: {
-    fontSize: 34,
-    lineHeight: 38,
-    fontWeight: 600,
-  },
-  toolEmoji: {
-    fontSize: 20,
+  toolButton: {
+    padding: Spacing.half,
   },
   swatchRow: {
     flexDirection: 'row',

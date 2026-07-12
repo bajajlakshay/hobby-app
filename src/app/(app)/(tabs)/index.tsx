@@ -1,5 +1,5 @@
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -13,12 +13,46 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { NoteCard } from '@/components/notes/note-card';
+import { Icon } from '@/components/ui/icon';
 import { BottomTabInset, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotesApi } from '@/services/notes/notes-api';
 import type { Note, NoteKind, NoteView } from '@/services/notes/types';
 
 const VIEWS: NoteView[] = ['Active', 'Archived', 'Trash'];
+
+/** Small header pill reflecting connectivity and unsynced changes. */
+function SyncStatus({
+  isOnline,
+  isSyncing,
+  pending,
+}: {
+  isOnline: boolean;
+  isSyncing: boolean;
+  pending: number;
+}) {
+  const theme = useTheme();
+  if (isOnline && !isSyncing && pending === 0) {
+    return null;
+  }
+
+  const label = !isOnline
+    ? pending > 0
+      ? `Offline · ${pending} change${pending === 1 ? '' : 's'} saved on device`
+      : 'Offline · changes are saved on device'
+    : isSyncing
+      ? 'Syncing…'
+      : `${pending} change${pending === 1 ? '' : 's'} to sync`;
+
+  return (
+    <View style={[styles.syncPill, { backgroundColor: theme.backgroundElement }]}>
+      <Icon name={isOnline ? 'sync' : 'offline'} size={13} color={theme.textSecondary} />
+      <ThemedText type="small" themeColor="textSecondary">
+        {label}
+      </ThemedText>
+    </View>
+  );
+}
 
 export default function NotesListScreen() {
   const theme = useTheme();
@@ -31,6 +65,9 @@ export default function NotesListScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  // Show the full-screen spinner only for the very first load; later reloads
+  // (search, view change, background sync) swap the list silently.
+  const loadedOnce = useRef(false);
 
   function createNote(kind: NoteKind) {
     setShowCreate(false);
@@ -41,7 +78,7 @@ export default function NotesListScreen() {
     async (opts?: { refreshing?: boolean }) => {
       if (opts?.refreshing) {
         setRefreshing(true);
-      } else {
+      } else if (!loadedOnce.current) {
         setLoading(true);
       }
       try {
@@ -49,6 +86,7 @@ export default function NotesListScreen() {
       } catch {
         setNotes([]);
       } finally {
+        loadedOnce.current = true;
         setLoading(false);
         setRefreshing(false);
       }
@@ -56,18 +94,31 @@ export default function NotesListScreen() {
     [api, view, search],
   );
 
-  // Debounce search + react to view changes.
+  // Debounce search + react to view changes (also covers the initial load and
+  // reloads after a background sync bumps the data version).
   useEffect(() => {
     const handle = setTimeout(() => void load(), 250);
     return () => clearTimeout(handle);
   }, [load]);
 
-  // Reload when returning from the editor.
+  // Reload when returning from the editor. The first focus coincides with the
+  // initial load above, so skip it to avoid a duplicate query.
+  const focusedOnce = useRef(false);
   useFocusEffect(
     useCallback(() => {
+      if (!focusedOnce.current) {
+        focusedOnce.current = true;
+        return;
+      }
       void load();
     }, [load]),
   );
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await api.sync();
+    await load({ refreshing: true });
+  }, [api, load]);
 
   async function togglePin(note: Note) {
     try {
@@ -82,6 +133,11 @@ export default function NotesListScreen() {
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['top']}>
       <View style={styles.header}>
         <ThemedText type="subtitle">Notes</ThemedText>
+        <SyncStatus
+          isOnline={api.isOnline}
+          isSyncing={api.isSyncing}
+          pending={api.pendingCount}
+        />
       </View>
 
       <TextInput
@@ -125,7 +181,7 @@ export default function NotesListScreen() {
           keyExtractor={(n) => n.id}
           contentContainerStyle={styles.list}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={() => load({ refreshing: true })} tintColor={theme.text} />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.text} />
           }
           ListEmptyComponent={
             <View style={styles.center}>
@@ -155,7 +211,7 @@ export default function NotesListScreen() {
           <Pressable
             onPress={() => createNote('text')}
             style={[styles.createOption, { backgroundColor: theme.backgroundElement }]}>
-            <ThemedText style={styles.createEmoji}>📝</ThemedText>
+            <Icon name="textNote" size={18} color={theme.text} />
             <ThemedText type="smallBold" style={{ color: theme.text }}>
               Text note
             </ThemedText>
@@ -163,7 +219,7 @@ export default function NotesListScreen() {
           <Pressable
             onPress={() => createNote('drawing')}
             style={[styles.createOption, { backgroundColor: theme.backgroundElement }]}>
-            <ThemedText style={styles.createEmoji}>✏️</ThemedText>
+            <Icon name="drawing" size={18} color={theme.text} />
             <ThemedText type="smallBold" style={{ color: theme.text }}>
               Drawing
             </ThemedText>
@@ -173,8 +229,8 @@ export default function NotesListScreen() {
 
       <Pressable
         onPress={() => setShowCreate((s) => !s)}
-        style={[styles.fab, { backgroundColor: '#208AEF' }]}>
-        <ThemedText style={styles.fabIcon}>{showCreate ? '×' : '＋'}</ThemedText>
+        style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}>
+        <Icon name={showCreate ? 'close' : 'add'} size={26} color="#ffffff" />
       </Pressable>
     </SafeAreaView>
   );
@@ -188,6 +244,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.four,
     paddingTop: Spacing.three,
     paddingBottom: Spacing.two,
+    gap: Spacing.one,
   },
   search: {
     marginHorizontal: Spacing.four,
@@ -217,6 +274,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: Spacing.six,
   },
+  syncPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: Spacing.one,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.half,
+    borderRadius: Spacing.five,
+  },
   fab: {
     position: 'absolute',
     right: Spacing.four,
@@ -226,12 +292,15 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#208AEF',
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
   },
-  fabIcon: {
-    color: '#ffffff',
-    fontSize: 28,
-    lineHeight: 32,
-    fontWeight: 600,
+  fabPressed: {
+    opacity: 0.85,
   },
   dismissOverlay: {
     position: 'absolute',
@@ -259,8 +328,5 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
     elevation: 4,
-  },
-  createEmoji: {
-    fontSize: 16,
   },
 });

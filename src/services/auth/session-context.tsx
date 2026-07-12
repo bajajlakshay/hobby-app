@@ -16,6 +16,8 @@ import { deleteStorageItem, getStorageItem, setStorageItem } from './storage';
 import type { AuthTokens, User } from './types';
 
 const TOKENS_KEY = 'hobby.auth.tokens';
+/** Cached /me profile so the app can start signed-in while offline. */
+const USER_KEY = 'hobby.auth.user';
 /** Refresh slightly before expiry to avoid races with the server clock. */
 const EXPIRY_SKEW_MS = 30_000;
 
@@ -62,15 +64,49 @@ export function SessionProvider({ children }: PropsWithChildren) {
     await deleteStorageItem(TOKENS_KEY);
   }, []);
 
-  const refreshTokens = useCallback(async (): Promise<AuthTokens> => {
-    const current = tokensRef.current;
-    if (!current) {
-      throw new ApiError(401, ['Not authenticated.']);
+  const persistUser = useCallback(async (me: User) => {
+    setUser(me);
+    await setStorageItem(USER_KEY, JSON.stringify(me));
+  }, []);
+
+  /** Drops the whole session (tokens + cached profile) and goes unauthenticated. */
+  const clearSession = useCallback(async () => {
+    await clearTokens();
+    await deleteStorageItem(USER_KEY);
+    setUser(null);
+  }, [clearTokens]);
+
+  // Refresh tokens rotate server-side (single use), so concurrent refreshes with
+  // the same token race each other. Share one in-flight refresh between callers.
+  const refreshInFlight = useRef<Promise<AuthTokens> | null>(null);
+
+  const refreshTokens = useCallback((): Promise<AuthTokens> => {
+    if (!refreshInFlight.current) {
+      refreshInFlight.current = (async () => {
+        const current = tokensRef.current;
+        if (!current) {
+          throw new ApiError(401, ['Not authenticated.']);
+        }
+        try {
+          const refreshed = await authApi.refresh(current.refreshToken);
+          await persistTokens(refreshed);
+          return refreshed;
+        } catch (error) {
+          if (error instanceof ApiError) {
+            // The server explicitly rejected the refresh token — the session is
+            // dead; sign out rather than failing every request from now on.
+            // (Network failures are not ApiErrors and keep the session for
+            // offline use.)
+            await clearSession();
+          }
+          throw error;
+        } finally {
+          refreshInFlight.current = null;
+        }
+      })();
     }
-    const refreshed = await authApi.refresh(current.refreshToken);
-    await persistTokens(refreshed);
-    return refreshed;
-  }, [persistTokens]);
+    return refreshInFlight.current;
+  }, [persistTokens, clearSession]);
 
   const getValidTokens = useCallback(async (): Promise<AuthTokens> => {
     const current = tokensRef.current;
@@ -100,24 +136,57 @@ export function SessionProvider({ children }: PropsWithChildren) {
     [getValidTokens, refreshTokens],
   );
 
-  // Bootstrap: restore a persisted session on app start.
+  // Bootstrap: restore a persisted session on app start. The cached profile is
+  // trusted immediately so the app starts signed-in even with no connectivity;
+  // the session is re-validated against the server in the background.
   useEffect(() => {
     let active = true;
-    (async () => {
+
+    const validateInBackground = async () => {
       try {
-        const raw = await getStorageItem(TOKENS_KEY);
-        if (!raw) {
-          return;
-        }
-        tokensRef.current = JSON.parse(raw) as AuthTokens;
         const tokens = await getValidTokens();
         const me = await authApi.me(tokens.accessToken);
         if (active) {
-          setUser(me);
+          await persistUser(me);
         }
       } catch {
-        // Token missing/expired/invalid — start unauthenticated.
-        await clearTokens();
+        // Offline or transient failure — keep the cached session. A refresh
+        // token the server explicitly rejected has already cleared it.
+      }
+    };
+
+    (async () => {
+      try {
+        const [rawTokens, rawUser] = await Promise.all([
+          getStorageItem(TOKENS_KEY),
+          getStorageItem(USER_KEY),
+        ]);
+        if (!rawTokens) {
+          return;
+        }
+        tokensRef.current = JSON.parse(rawTokens) as AuthTokens;
+
+        const cached = rawUser ? (JSON.parse(rawUser) as User) : null;
+        if (cached) {
+          if (active) {
+            setUser(cached);
+          }
+          void validateInBackground();
+          return;
+        }
+
+        // No cached profile (session persisted by an older app version):
+        // validating online is the only option.
+        const tokens = await getValidTokens();
+        const me = await authApi.me(tokens.accessToken);
+        if (active) {
+          await persistUser(me);
+        }
+      } catch (error) {
+        if (error instanceof ApiError) {
+          // The server rejected the session — start unauthenticated.
+          await clearSession();
+        }
       } finally {
         if (active) {
           setIsLoading(false);
@@ -127,15 +196,15 @@ export function SessionProvider({ children }: PropsWithChildren) {
     return () => {
       active = false;
     };
-  }, [getValidTokens, clearTokens]);
+  }, [getValidTokens, persistUser, clearSession]);
 
   const signIn = useCallback(
     async (email: string, password: string) => {
       const tokens = await authApi.login({ email, password });
       await persistTokens(tokens);
-      setUser(await authApi.me(tokens.accessToken));
+      await persistUser(await authApi.me(tokens.accessToken));
     },
-    [persistTokens],
+    [persistTokens, persistUser],
   );
 
   const signUp = useCallback(async (email: string, password: string) => {
@@ -148,9 +217,9 @@ export function SessionProvider({ children }: PropsWithChildren) {
     async (email: string, code: string) => {
       const tokens = await authApi.verifyEmail(email, code);
       await persistTokens(tokens);
-      setUser(await authApi.me(tokens.accessToken));
+      await persistUser(await authApi.me(tokens.accessToken));
     },
-    [persistTokens],
+    [persistTokens, persistUser],
   );
 
   const resendOtp = useCallback(async (email: string) => {
@@ -166,9 +235,8 @@ export function SessionProvider({ children }: PropsWithChildren) {
         // Best-effort; clear the local session regardless.
       }
     }
-    await clearTokens();
-    setUser(null);
-  }, [clearTokens]);
+    await clearSession();
+  }, [clearSession]);
 
   const value = useMemo<SessionContextValue>(
     () => ({

@@ -19,10 +19,24 @@ export interface TextNoteDoc {
   text: string;
 }
 
+/**
+ * The coordinate space a drawing was authored in. Strokes are stored in these
+ * units and rendered through an SVG viewBox, so a drawing made on one device
+ * scales correctly on any other screen size.
+ */
+export interface DrawingCanvasInfo {
+  width: number;
+  height: number;
+  /** Background the strokes were drawn on, frozen at authoring time (WYSIWYG). */
+  background?: string;
+}
+
 /** A drawing note: a full-page handwriting pad. */
 export interface DrawingNoteDoc {
   kind: 'drawing';
   strokes: Stroke[];
+  /** Absent on drawings saved by older app versions (raw device pixels). */
+  canvas?: DrawingCanvasInfo;
 }
 
 export type NoteDoc = TextNoteDoc | DrawingNoteDoc;
@@ -63,7 +77,12 @@ export function parseNote(content: string): NoteDoc {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       const obj = parsed as Record<string, unknown>;
       if (obj.kind === 'drawing') {
-        return { kind: 'drawing', strokes: Array.isArray(obj.strokes) ? (obj.strokes as Stroke[]) : [] };
+        const canvas = parseCanvasInfo(obj.canvas);
+        return {
+          kind: 'drawing',
+          strokes: Array.isArray(obj.strokes) ? (obj.strokes as Stroke[]) : [],
+          ...(canvas ? { canvas } : {}),
+        };
       }
       if (obj.kind === 'text') {
         // `text` is the current field; `markdown` is read for older notes.
@@ -96,6 +115,21 @@ export function parseNote(content: string): NoteDoc {
     // fall through to default
   }
   return { kind: 'text', text: '' };
+}
+
+function parseCanvasInfo(value: unknown): DrawingCanvasInfo | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const c = value as Record<string, unknown>;
+  if (typeof c.width !== 'number' || typeof c.height !== 'number' || c.width <= 0 || c.height <= 0) {
+    return null;
+  }
+  return {
+    width: c.width,
+    height: c.height,
+    ...(typeof c.background === 'string' ? { background: c.background } : {}),
+  };
 }
 
 /** The kind of a stored note, for list rendering. */

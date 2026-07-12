@@ -1,5 +1,5 @@
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -12,6 +12,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
+import { Icon } from '@/components/ui/icon';
 import { BottomTabInset, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useTasksApi } from '@/services/tasks/tasks-api';
@@ -26,6 +27,9 @@ export default function TasksListScreen() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  // Tasks are online-only, so a failed load must look different from an empty
+  // list. Stale results are kept on screen while the banner shows.
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const load = useCallback(
     async (opts?: { refreshing?: boolean }) => {
@@ -36,8 +40,9 @@ export default function TasksListScreen() {
       }
       try {
         setTasks(await api.list(search));
+        setLoadFailed(false);
       } catch {
-        setTasks([]);
+        setLoadFailed(true);
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -51,8 +56,15 @@ export default function TasksListScreen() {
     return () => clearTimeout(handle);
   }, [load]);
 
+  // Reload when returning from the editor; the first focus coincides with the
+  // initial load above, so skip it to avoid a duplicate request.
+  const focusedOnce = useRef(false);
   useFocusEffect(
     useCallback(() => {
+      if (!focusedOnce.current) {
+        focusedOnce.current = true;
+        return;
+      }
       void load();
     }, [load]),
   );
@@ -73,6 +85,20 @@ export default function TasksListScreen() {
         returnKeyType="search"
       />
 
+      {loadFailed && (
+        <View style={[styles.errorBanner, { backgroundColor: theme.backgroundElement }]}>
+          <Icon name="offline" size={16} color={theme.textSecondary} />
+          <ThemedText type="small" themeColor="textSecondary" style={styles.errorText}>
+            Couldn’t load tasks — check your connection.
+          </ThemedText>
+          <Pressable hitSlop={8} onPress={() => void load()}>
+            <ThemedText type="smallBold" style={{ color: '#208AEF' }}>
+              Retry
+            </ThemedText>
+          </Pressable>
+        </View>
+      )}
+
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator color={theme.text} />
@@ -90,9 +116,11 @@ export default function TasksListScreen() {
             />
           }
           ListEmptyComponent={
-            <View style={styles.center}>
-              <ThemedText themeColor="textSecondary">No tasks yet. Tap + to create one.</ThemedText>
-            </View>
+            loadFailed ? null : (
+              <View style={styles.center}>
+                <ThemedText themeColor="textSecondary">No tasks yet. Tap + to create one.</ThemedText>
+              </View>
+            )
           }
           renderItem={({ item }) => (
             <TaskRow task={item} onPress={() => router.push(`/task/${item.id}`)} />
@@ -103,8 +131,8 @@ export default function TasksListScreen() {
 
       <Pressable
         onPress={() => router.push('/task/new')}
-        style={[styles.fab, { backgroundColor: '#208AEF' }]}>
-        <ThemedText style={styles.fabIcon}>＋</ThemedText>
+        style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}>
+        <Icon name="add" size={26} color="#ffffff" />
       </Pressable>
     </SafeAreaView>
   );
@@ -192,6 +220,19 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 3,
   },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    marginHorizontal: Spacing.four,
+    marginTop: Spacing.three,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    borderRadius: Spacing.two,
+  },
+  errorText: {
+    flex: 1,
+  },
   fab: {
     position: 'absolute',
     right: Spacing.four,
@@ -201,11 +242,14 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#208AEF',
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
   },
-  fabIcon: {
-    color: '#ffffff',
-    fontSize: 28,
-    lineHeight: 32,
-    fontWeight: 600,
+  fabPressed: {
+    opacity: 0.85,
   },
 });

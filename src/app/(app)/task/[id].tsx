@@ -1,5 +1,5 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -13,24 +13,96 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
+import { confirmDestructive } from '@/components/ui/confirm';
+import { Icon } from '@/components/ui/icon';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useTasksApi } from '@/services/tasks/tasks-api';
-import type { ChecklistItem } from '@/services/tasks/types';
+import type { ChecklistItem, SaveTaskPayload } from '@/services/tasks/types';
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+/** Autosave delay. Tasks save to the server, so give typing a little more room. */
+const AUTOSAVE_MS = 1200;
+
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
+
+function makePayload(title: string, items: ChecklistItem[]): SaveTaskPayload {
+  return {
+    title: title.trim(),
+    items: items
+      .filter((i) => i.text.trim().length > 0)
+      .map((i) => ({ id: i.id, text: i.text.trim(), isCompleted: i.isCompleted })),
+  };
+}
+
+function payloadIsEmpty(payload: SaveTaskPayload): boolean {
+  return payload.title.length === 0 && payload.items.length === 0;
+}
 
 export default function TaskEditorScreen() {
   const theme = useTheme();
   const router = useRouter();
+  const navigation = useNavigation();
   const api = useTasksApi();
   const { id } = useLocalSearchParams<{ id: string }>();
   const isNew = id === 'new';
 
-  const [taskId, setTaskId] = useState<string | null>(isNew ? null : id);
   const [title, setTitle] = useState('');
   const [items, setItems] = useState<ChecklistItem[]>([]);
   const [loading, setLoading] = useState(!isNew);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+
+  // --- persistence ----------------------------------------------------------
+  // Tasks save to the server (unlike notes there's no offline store), so saves
+  // are serialized, retried on the next edit, and surfaced when they fail.
+  const taskIdRef = useRef<string | null>(isNew ? null : id);
+  const lastSavedRef = useRef<string | null>(null);
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const discardRef = useRef(false);
+
+  const payload = makePayload(title, items);
+  const payloadRef = useRef(payload);
+
+  const saveNow = useCallback((): Promise<void> => {
+    const run = async () => {
+      if (discardRef.current) {
+        return;
+      }
+      const current = payloadRef.current;
+      const serialized = JSON.stringify(current);
+      if (serialized === lastSavedRef.current) {
+        return;
+      }
+      setSaveStatus('saving');
+      try {
+        if (taskIdRef.current) {
+          await api.update(taskIdRef.current, current);
+        } else {
+          if (payloadIsEmpty(current)) {
+            setSaveStatus('idle');
+            return;
+          }
+          const created = await api.create(current);
+          taskIdRef.current = created.id;
+        }
+        lastSavedRef.current = serialized;
+        setSaveStatus('saved');
+      } catch (error) {
+        setSaveStatus('error');
+        throw error;
+      }
+    };
+    const next = saveChainRef.current.then(run, run);
+    saveChainRef.current = next.catch(() => {});
+    return next;
+  }, [api]);
+
+  const saveNowRef = useRef(saveNow);
+  useEffect(() => {
+    payloadRef.current = payload;
+    saveNowRef.current = saveNow;
+  });
 
   useEffect(() => {
     if (isNew) {
@@ -45,6 +117,7 @@ export default function TaskEditorScreen() {
         }
         setTitle(task.title);
         setItems(task.items);
+        lastSavedRef.current = JSON.stringify(makePayload(task.title, task.items));
       } catch {
         router.back();
       } finally {
@@ -56,16 +129,29 @@ export default function TaskEditorScreen() {
     return () => {
       active = false;
     };
-  }, [api, id, isNew, router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, isNew]);
+
+  // Debounced autosave on any edit.
+  const serialized = JSON.stringify(payload);
+  useEffect(() => {
+    if (loading || serialized === lastSavedRef.current) {
+      return;
+    }
+    const handle = setTimeout(() => saveNowRef.current().catch(() => {}), AUTOSAVE_MS);
+    return () => clearTimeout(handle);
+  }, [serialized, loading]);
+
+  // Best-effort flush when the system back gesture bypasses our back button.
+  useEffect(() => {
+    return navigation.addListener('beforeRemove', () => {
+      saveNowRef.current().catch(() => {});
+    });
+  }, [navigation]);
 
   const done = items.filter((i) => i.isCompleted).length;
   const total = items.length;
   const ratio = total > 0 ? done / total : 0;
-
-  const isEmpty = useMemo(
-    () => title.trim().length === 0 && items.every((i) => i.text.trim().length === 0),
-    [title, items],
-  );
 
   const addItem = () =>
     setItems((xs) => [...xs, { id: uid(), text: '', isCompleted: false }]);
@@ -81,45 +167,46 @@ export default function TaskEditorScreen() {
   const removeItem = (itemId: string) =>
     setItems((xs) => xs.filter((i) => i.id !== itemId));
 
-  const buildPayload = useCallback(
-    () => ({
-      title: title.trim(),
-      items: items
-        .filter((i) => i.text.trim().length > 0)
-        .map((i) => ({ id: i.id, text: i.text.trim(), isCompleted: i.isCompleted })),
-    }),
-    [title, items],
-  );
-
-  const ensureSaved = useCallback(async (): Promise<string | null> => {
-    const payload = buildPayload();
-    if (taskId) {
-      await api.update(taskId, payload);
-      return taskId;
-    }
-    if (isEmpty) {
-      return null;
-    }
-    const created = await api.create(payload);
-    setTaskId(created.id);
-    return created.id;
-  }, [api, buildPayload, isEmpty, taskId]);
-
   const goBackSaving = useCallback(async () => {
     try {
-      await ensureSaved();
-    } catch {
-      // Navigation proceeds regardless.
-    } finally {
+      await saveNow();
       router.back();
+    } catch {
+      // The save failed (most likely offline). Let the user decide instead of
+      // silently dropping their edits.
+      const discard = await confirmDestructive({
+        title: 'Couldn’t save changes',
+        message: 'You appear to be offline. Leave anyway and lose the latest edits?',
+        confirmLabel: 'Discard changes',
+      });
+      if (discard) {
+        discardRef.current = true;
+        router.back();
+      }
     }
-  }, [ensureSaved, router]);
+  }, [saveNow, router]);
 
   const deleteTask = async () => {
-    if (taskId) {
-      await api.remove(taskId);
+    if (!taskIdRef.current) {
+      router.back();
+      return;
     }
-    router.back();
+    const confirmed = await confirmDestructive({
+      title: 'Delete this task?',
+      message: 'The whole checklist will be permanently deleted.',
+      confirmLabel: 'Delete',
+    });
+    if (!confirmed) {
+      return;
+    }
+    discardRef.current = true;
+    try {
+      await api.remove(taskIdRef.current);
+      router.back();
+    } catch {
+      discardRef.current = false;
+      setSaveStatus('error');
+    }
   };
 
   if (loading) {
@@ -133,12 +220,16 @@ export default function TaskEditorScreen() {
   return (
     <SafeAreaView style={[styles.flex, { backgroundColor: theme.background }]} edges={['top', 'bottom']}>
       <View style={styles.toolbar}>
-        <Pressable hitSlop={8} onPress={goBackSaving}>
-          <ThemedText style={styles.back}>‹</ThemedText>
+        <Pressable hitSlop={8} onPress={goBackSaving} style={styles.toolButton}>
+          <Icon name="back" size={22} color={theme.text} />
         </Pressable>
-        <Pressable hitSlop={8} onPress={deleteTask}>
-          <ThemedText style={styles.toolEmoji}>🗑️</ThemedText>
-        </Pressable>
+
+        <View style={styles.toolbarActions}>
+          <SaveIndicator status={saveStatus} />
+          <Pressable hitSlop={8} onPress={deleteTask} style={styles.toolButton}>
+            <Icon name="trash" size={20} color={theme.text} />
+          </Pressable>
+        </View>
       </View>
 
       <KeyboardAvoidingView
@@ -201,21 +292,37 @@ export default function TaskEditorScreen() {
                   multiline
                 />
 
-                <Pressable hitSlop={6} onPress={() => removeItem(item.id)}>
-                  <ThemedText style={[styles.remove, { color: theme.textSecondary }]}>✕</ThemedText>
+                <Pressable hitSlop={6} onPress={() => removeItem(item.id)} style={styles.toolButton}>
+                  <Icon name="close" size={16} color={theme.textSecondary} />
                 </Pressable>
               </View>
             ))}
           </View>
 
           <Pressable hitSlop={6} onPress={addItem} style={styles.addRow}>
+            <Icon name="add" size={16} color="#208AEF" />
             <ThemedText type="smallBold" style={{ color: '#208AEF' }}>
-              ＋ Add item
+              Add item
             </ThemedText>
           </Pressable>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
+  );
+}
+
+function SaveIndicator({ status }: { status: SaveStatus }) {
+  if (status === 'idle') {
+    return null;
+  }
+  const label = status === 'saving' ? 'Saving…' : status === 'saved' ? 'Saved' : 'Couldn’t save';
+  return (
+    <ThemedText
+      type="small"
+      themeColor="textSecondary"
+      style={status === 'error' && styles.saveError}>
+      {label}
+    </ThemedText>
   );
 }
 
@@ -229,13 +336,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.four,
     paddingVertical: Spacing.two,
   },
-  back: {
-    fontSize: 34,
-    lineHeight: 38,
-    fontWeight: 600,
+  toolbarActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
   },
-  toolEmoji: {
-    fontSize: 20,
+  toolButton: {
+    padding: Spacing.half,
+  },
+  saveError: {
+    color: '#EF4444',
   },
   content: {
     paddingHorizontal: Spacing.four,
@@ -290,12 +400,11 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     paddingVertical: Spacing.one,
   },
-  remove: {
-    fontSize: 16,
-    paddingHorizontal: Spacing.one,
-  },
   addRow: {
     alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.one,
     paddingVertical: Spacing.two,
   },
 });

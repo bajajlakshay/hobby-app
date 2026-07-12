@@ -1,10 +1,10 @@
-import { useMemo, useReducer, useRef } from 'react';
-import { PanResponder, StyleSheet, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { PanResponder, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import type { Point, Stroke } from '@/services/notes/types';
+import type { DrawingCanvasInfo, Point, Stroke } from '@/services/notes/types';
 
 type DrawingCanvasProps = {
   strokes: Stroke[];
@@ -12,6 +12,15 @@ type DrawingCanvasProps = {
   color: string;
   strokeWidth: number;
   height: number;
+  /**
+   * The coordinate space the drawing was authored in. When absent (new note or
+   * a legacy drawing), the canvas adopts its own layout size and reports it via
+   * {@link onAdoptCanvas} so the editor can persist it with the note.
+   */
+  canvas?: DrawingCanvasInfo | null;
+  onAdoptCanvas?: (canvas: { width: number; height: number }) => void;
+  /** Background the strokes were drawn on; falls back to the theme's surface. */
+  background?: string;
   /** Notifies the parent so it can disable scrolling while a stroke is in progress. */
   onActiveChange?: (active: boolean) => void;
 };
@@ -36,42 +45,70 @@ export function DrawingCanvas({
   color,
   strokeWidth,
   height,
+  canvas,
+  onAdoptCanvas,
+  background,
   onActiveChange,
 }: DrawingCanvasProps) {
   const theme = useTheme();
+  const [layoutWidth, setLayoutWidth] = useState(0);
+  // The stroke being drawn right now. Accumulated in a ref (event handlers) and
+  // mirrored into state for rendering.
   const currentPoints = useRef<Point[]>([]);
-  const [, rerender] = useReducer((c: number) => c + 1, 0);
+  const [livePoints, setLivePoints] = useState<Point[]>([]);
+
+  // Strokes are stored in the authored coordinate space and rendered through a
+  // viewBox, so they scale uniformly on any screen width. Touch input is mapped
+  // from layout pixels into that space with the same factor.
+  const docWidth = canvas?.width ?? layoutWidth;
+  const scale = layoutWidth > 0 && docWidth > 0 ? docWidth / layoutWidth : 1;
+  const viewBoxHeight = height * scale;
+
+  const onLayout = (e: LayoutChangeEvent) => {
+    const width = e.nativeEvent.layout.width;
+    setLayoutWidth(width);
+    if (!canvas && width > 0 && height > 0) {
+      onAdoptCanvas?.({ width, height });
+    }
+  };
 
   // Refs keep the PanResponder (created once) reading the latest props.
   const strokesRef = useRef(strokes);
-  strokesRef.current = strokes;
   const colorRef = useRef(color);
-  colorRef.current = color;
   const widthRef = useRef(strokeWidth);
-  widthRef.current = strokeWidth;
+  const scaleRef = useRef(scale);
   const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
   const onActiveRef = useRef(onActiveChange);
-  onActiveRef.current = onActiveChange;
+  useEffect(() => {
+    strokesRef.current = strokes;
+    colorRef.current = color;
+    widthRef.current = strokeWidth;
+    scaleRef.current = scale;
+    onChangeRef.current = onChange;
+    onActiveRef.current = onActiveChange;
+  });
 
   const responder = useMemo(
     () =>
+      // eslint-disable-next-line react-hooks/refs -- handlers read the refs only inside touch events, never during render
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: (e) => {
+          const s = scaleRef.current;
           currentPoints.current = [
-            { x: e.nativeEvent.locationX, y: e.nativeEvent.locationY },
+            { x: e.nativeEvent.locationX * s, y: e.nativeEvent.locationY * s },
           ];
+          setLivePoints(currentPoints.current.slice());
           onActiveRef.current?.(true);
-          rerender();
         },
         onPanResponderMove: (e) => {
+          const s = scaleRef.current;
           currentPoints.current.push({
-            x: e.nativeEvent.locationX,
-            y: e.nativeEvent.locationY,
+            x: e.nativeEvent.locationX * s,
+            y: e.nativeEvent.locationY * s,
           });
-          rerender();
+          setLivePoints(currentPoints.current.slice());
         },
         onPanResponderRelease: () => {
           if (currentPoints.current.length > 0) {
@@ -79,19 +116,20 @@ export function DrawingCanvas({
               ...strokesRef.current,
               {
                 color: colorRef.current,
-                width: widthRef.current,
+                // Widths live in the authored space too, so they scale with it.
+                width: widthRef.current * scaleRef.current,
                 points: currentPoints.current,
               },
             ]);
           }
           currentPoints.current = [];
+          setLivePoints([]);
           onActiveRef.current?.(false);
-          rerender();
         },
         onPanResponderTerminate: () => {
           currentPoints.current = [];
+          setLivePoints([]);
           onActiveRef.current?.(false);
-          rerender();
         },
       }),
     [],
@@ -100,33 +138,44 @@ export function DrawingCanvas({
   return (
     <View
       {...responder.panHandlers}
+      onLayout={onLayout}
       style={[
         styles.canvas,
-        { height, backgroundColor: theme.backgroundElement, borderColor: theme.backgroundSelected },
+        {
+          height,
+          backgroundColor: background ?? theme.backgroundElement,
+          borderColor: theme.backgroundSelected,
+        },
       ]}>
-      <Svg width="100%" height={height}>
-        {strokes.map((stroke, index) => (
-          <Path
-            key={index}
-            d={pointsToPath(stroke.points)}
-            stroke={stroke.color}
-            strokeWidth={stroke.width}
-            fill="none"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        ))}
-        {currentPoints.current.length > 0 && (
-          <Path
-            d={pointsToPath(currentPoints.current)}
-            stroke={color}
-            strokeWidth={strokeWidth}
-            fill="none"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        )}
-      </Svg>
+      {layoutWidth > 0 && (
+        <Svg
+          width="100%"
+          height={height}
+          viewBox={`0 0 ${docWidth} ${viewBoxHeight}`}
+          preserveAspectRatio="xMidYMin meet">
+          {strokes.map((stroke, index) => (
+            <Path
+              key={index}
+              d={pointsToPath(stroke.points)}
+              stroke={stroke.color}
+              strokeWidth={stroke.width}
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          ))}
+          {livePoints.length > 0 && (
+            <Path
+              d={pointsToPath(livePoints)}
+              stroke={color}
+              strokeWidth={strokeWidth * scale}
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          )}
+        </Svg>
+      )}
     </View>
   );
 }
