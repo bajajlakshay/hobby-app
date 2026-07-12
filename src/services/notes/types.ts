@@ -1,4 +1,4 @@
-/** A point in a handwriting stroke, in the drawing block's local coordinates. */
+/** A point in a handwriting stroke, in the canvas's local coordinates. */
 export interface Point {
   x: number;
   y: number;
@@ -10,22 +10,24 @@ export interface Stroke {
   points: Point[];
 }
 
-export interface TextBlock {
-  id: string;
-  type: 'text';
+/** A note is one of two kinds, chosen when it's created. */
+export type NoteKind = 'text' | 'drawing';
+
+/** A typed note: a plain-text body. */
+export interface TextNoteDoc {
+  kind: 'text';
   text: string;
 }
 
-export interface DrawingBlock {
-  id: string;
-  type: 'drawing';
-  height: number;
+/** A drawing note: a full-page handwriting pad. */
+export interface DrawingNoteDoc {
+  kind: 'drawing';
   strokes: Stroke[];
 }
 
-export type NoteBlock = TextBlock | DrawingBlock;
+export type NoteDoc = TextNoteDoc | DrawingNoteDoc;
 
-/** Note as returned by the backend (content is a JSON-encoded NoteBlock[]). */
+/** Note as returned by the backend (content is the JSON-encoded NoteDoc). */
 export interface Note {
   id: string;
   title: string;
@@ -48,21 +50,55 @@ export interface SaveNotePayload {
   color: string | null;
 }
 
-/** Parses a note's stored content into blocks, tolerating bad/empty data. */
-export function parseBlocks(content: string): NoteBlock[] {
+/**
+ * Parses a note's stored content into a {@link NoteDoc}. Understands the current
+ * `{ kind, ... }` shape and the legacy block-array format (for older notes),
+ * always returning a valid doc (defaults to an empty text note).
+ */
+export function parseNote(content: string): NoteDoc {
   try {
-    const parsed = JSON.parse(content);
-    return Array.isArray(parsed) ? (parsed as NoteBlock[]) : [];
+    const parsed = JSON.parse(content) as unknown;
+
+    // Current format: a tagged object.
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const obj = parsed as Record<string, unknown>;
+      if (obj.kind === 'drawing') {
+        return { kind: 'drawing', strokes: Array.isArray(obj.strokes) ? (obj.strokes as Stroke[]) : [] };
+      }
+      if (obj.kind === 'text') {
+        // `text` is the current field; `markdown` is read for older notes.
+        const body = typeof obj.text === 'string'
+          ? obj.text
+          : typeof obj.markdown === 'string'
+            ? obj.markdown
+            : '';
+        return { kind: 'text', text: body };
+      }
+    }
+
+    // Legacy format: an array of { type: 'text' | 'drawing' } blocks.
+    if (Array.isArray(parsed)) {
+      const strokes: Stroke[] = [];
+      const texts: string[] = [];
+      for (const block of parsed as Record<string, unknown>[]) {
+        if (block?.type === 'drawing' && Array.isArray(block.strokes)) {
+          strokes.push(...(block.strokes as Stroke[]));
+        } else if (block?.type === 'text' && typeof block.text === 'string') {
+          texts.push(block.text);
+        }
+      }
+      if (strokes.length > 0) {
+        return { kind: 'drawing', strokes };
+      }
+      return { kind: 'text', text: texts.join('\n\n') };
+    }
   } catch {
-    return [];
+    // fall through to default
   }
+  return { kind: 'text', text: '' };
 }
 
-/** Flattens typed text from blocks for the searchable plainText field. */
-export function blocksToPlainText(blocks: NoteBlock[]): string {
-  return blocks
-    .filter((b): b is TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n')
-    .trim();
+/** The kind of a stored note, for list rendering. */
+export function noteKind(content: string): NoteKind {
+  return parseNote(content).kind;
 }

@@ -16,7 +16,7 @@ import { NoteCard } from '@/components/notes/note-card';
 import { BottomTabInset, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotesApi } from '@/services/notes/notes-api';
-import type { Note, NoteView } from '@/services/notes/types';
+import type { Note, NoteKind, NoteView } from '@/services/notes/types';
 
 const VIEWS: NoteView[] = ['Active', 'Archived', 'Trash'];
 
@@ -30,6 +30,12 @@ export default function NotesListScreen() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+
+  function createNote(kind: NoteKind) {
+    setShowCreate(false);
+    router.push({ pathname: '/note/[id]', params: { id: 'new', kind } });
+  }
 
   const load = useCallback(
     async (opts?: { refreshing?: boolean }) => {
@@ -140,10 +146,35 @@ export default function NotesListScreen() {
         />
       )}
 
+      {showCreate && (
+        <Pressable style={styles.dismissOverlay} onPress={() => setShowCreate(false)} />
+      )}
+
+      {showCreate && (
+        <View style={styles.createMenu}>
+          <Pressable
+            onPress={() => createNote('text')}
+            style={[styles.createOption, { backgroundColor: theme.backgroundElement }]}>
+            <ThemedText style={styles.createEmoji}>📝</ThemedText>
+            <ThemedText type="smallBold" style={{ color: theme.text }}>
+              Text note
+            </ThemedText>
+          </Pressable>
+          <Pressable
+            onPress={() => createNote('drawing')}
+            style={[styles.createOption, { backgroundColor: theme.backgroundElement }]}>
+            <ThemedText style={styles.createEmoji}>✏️</ThemedText>
+            <ThemedText type="smallBold" style={{ color: theme.text }}>
+              Drawing
+            </ThemedText>
+          </Pressable>
+        </View>
+      )}
+
       <Pressable
-        onPress={() => router.push('/note/new')}
+        onPress={() => setShowCreate((s) => !s)}
         style={[styles.fab, { backgroundColor: '#208AEF' }]}>
-        <ThemedText style={styles.fabIcon}>＋</ThemedText>
+        <ThemedText style={styles.fabIcon}>{showCreate ? '×' : '＋'}</ThemedText>
       </Pressable>
     </SafeAreaView>
   );
@@ -201,5 +232,35 @@ const styles = StyleSheet.create({
     fontSize: 28,
     lineHeight: 32,
     fontWeight: 600,
+  },
+  dismissOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  createMenu: {
+    position: 'absolute',
+    right: Spacing.four,
+    bottom: BottomTabInset + Spacing.three + 56 + Spacing.three,
+    gap: Spacing.two,
+    alignItems: 'flex-end',
+  },
+  createOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    paddingVertical: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    borderRadius: Spacing.five,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+  },
+  createEmoji: {
+    fontSize: 16,
   },
 });

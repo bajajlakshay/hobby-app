@@ -4,7 +4,7 @@ import { ThemedText } from '@/components/themed-text';
 import { NoteColoredTextColor } from '@/constants/notes';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { parseBlocks, type Note } from '@/services/notes/types';
+import { parseNote, type Note } from '@/services/notes/types';
 
 type NoteCardProps = {
   note: Note;
@@ -20,10 +20,11 @@ export function NoteCard({ note, onPress, onTogglePin, showPin = true }: NoteCar
   const textColor = note.color ? NoteColoredTextColor : theme.text;
   const mutedColor = note.color ? NoteColoredTextColor : theme.textSecondary;
 
-  const blocks = parseBlocks(note.content);
-  const hasDrawing = blocks.some((b) => b.type === 'drawing');
-  const preview = note.plainText.trim();
+  const doc = parseNote(note.content);
   const hasTitle = note.title.trim().length > 0;
+  const preview = doc.kind === 'text' ? doc.text.trim() : '';
+  const isEmpty =
+    !hasTitle && (doc.kind === 'text' ? preview.length === 0 : doc.strokes.length === 0);
 
   return (
     <Pressable
@@ -44,19 +45,19 @@ export function NoteCard({ note, onPress, onTogglePin, showPin = true }: NoteCar
         )}
       </View>
 
-      {preview.length > 0 && (
+      {doc.kind === 'text' && preview.length > 0 && (
         <ThemedText type="small" style={{ color: mutedColor }} numberOfLines={6}>
           {preview}
         </ThemedText>
       )}
 
-      {hasDrawing && (
-        <ThemedText type="small" style={[styles.handwriting, { color: mutedColor }]}>
-          ✎ Handwriting
+      {doc.kind === 'drawing' && doc.strokes.length > 0 && (
+        <ThemedText type="small" style={{ color: mutedColor }}>
+          ✎ Drawing
         </ThemedText>
       )}
 
-      {!hasTitle && preview.length === 0 && !hasDrawing && (
+      {isEmpty && (
         <ThemedText type="small" style={{ color: mutedColor, fontStyle: 'italic' }}>
           Empty note
         </ThemedText>
@@ -84,8 +85,5 @@ const styles = StyleSheet.create({
   },
   pin: {
     fontSize: 16,
-  },
-  handwriting: {
-    marginTop: Spacing.one,
   },
 });

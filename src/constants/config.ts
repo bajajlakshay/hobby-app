@@ -10,5 +10,4 @@
  * Use plain HTTP locally: the ASP.NET Core dev cert is only valid for
  * `localhost` and is untrusted on a phone.
  */
-export const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_URL ?? 'https://hobbyapp.tech';
+export const API_BASE_URL = 'https://hobbyapp.tech';

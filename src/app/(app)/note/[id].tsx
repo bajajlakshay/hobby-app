@@ -3,9 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  type LayoutChangeEvent,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   TextInput,
   View,
@@ -18,38 +18,27 @@ import { NoteColoredTextColor, NoteColors, PenColors, PenWidths } from '@/consta
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotesApi } from '@/services/notes/notes-api';
-import {
-  blocksToPlainText,
-  parseBlocks,
-  type DrawingBlock,
-  type NoteBlock,
-  type Stroke,
-  type TextBlock,
-} from '@/services/notes/types';
-
-const DRAWING_HEIGHT = 240;
-const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+import { parseNote, type NoteDoc, type NoteKind, type Stroke } from '@/services/notes/types';
 
 export default function NoteEditorScreen() {
   const theme = useTheme();
   const router = useRouter();
   const api = useNotesApi();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, kind: kindParam } = useLocalSearchParams<{ id: string; kind?: string }>();
   const isNew = id === 'new';
 
   const [noteId, setNoteId] = useState<string | null>(isNew ? null : id);
+  const [kind, setKind] = useState<NoteKind>(kindParam === 'drawing' ? 'drawing' : 'text');
   const [title, setTitle] = useState('');
-  const [blocks, setBlocks] = useState<NoteBlock[]>([{ id: uid(), type: 'text', text: '' }]);
+  const [text, setText] = useState('');
+  const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [color, setColor] = useState<string | null>(null);
   const [isPinned, setIsPinned] = useState(false);
   const [isArchived, setIsArchived] = useState(false);
   const [isTrashed, setIsTrashed] = useState(false);
 
   const [loading, setLoading] = useState(!isNew);
-  const [scrollEnabled, setScrollEnabled] = useState(true);
   const [showColors, setShowColors] = useState(false);
-  const [penColor, setPenColor] = useState<string>(theme.text);
-  const [penWidth, setPenWidth] = useState(PenWidths[1]);
 
   useEffect(() => {
     if (isNew) {
@@ -62,9 +51,14 @@ export default function NoteEditorScreen() {
         if (!active) {
           return;
         }
+        const doc = parseNote(note.content);
+        setKind(doc.kind);
+        if (doc.kind === 'text') {
+          setText(doc.text);
+        } else {
+          setStrokes(doc.strokes);
+        }
         setTitle(note.title);
-        const parsed = parseBlocks(note.content);
-        setBlocks(parsed.length > 0 ? parsed : [{ id: uid(), type: 'text', text: '' }]);
         setColor(note.color);
         setIsPinned(note.isPinned);
         setIsArchived(note.isArchived);
@@ -83,57 +77,26 @@ export default function NoteEditorScreen() {
   }, [api, id, isNew, router]);
 
   const contentColor = color ? NoteColoredTextColor : theme.text;
+  const placeholderColor = color ? '#6B7280' : theme.textSecondary;
   const backgroundColor = color ?? theme.background;
-  const hasDrawing = blocks.some((b) => b.type === 'drawing');
 
-  const isEmpty = useMemo(
-    () =>
-      title.trim().length === 0 &&
-      blocks.every(
-        (b) =>
-          (b.type === 'text' && b.text.trim().length === 0) ||
-          (b.type === 'drawing' && b.strokes.length === 0),
-      ),
-    [title, blocks],
-  );
-
-  // --- block editing ---
-  const updateText = (blockId: string, text: string) =>
-    setBlocks((bs) => bs.map((b) => (b.id === blockId && b.type === 'text' ? { ...b, text } : b)));
-
-  const updateStrokes = (blockId: string, strokes: Stroke[]) =>
-    setBlocks((bs) =>
-      bs.map((b) => (b.id === blockId && b.type === 'drawing' ? { ...b, strokes } : b)),
-    );
-
-  const removeBlock = (blockId: string) =>
-    setBlocks((bs) => bs.filter((b) => b.id !== blockId));
-
-  const addTextBlock = () =>
-    setBlocks((bs) => [...bs, { id: uid(), type: 'text', text: '' }]);
-
-  const addDrawingBlock = () =>
-    setBlocks((bs) => [...bs, { id: uid(), type: 'drawing', height: DRAWING_HEIGHT, strokes: [] }]);
-
-  const undoStroke = (blockId: string) =>
-    setBlocks((bs) =>
-      bs.map((b) =>
-        b.id === blockId && b.type === 'drawing'
-          ? { ...b, strokes: b.strokes.slice(0, -1) }
-          : b,
-      ),
-    );
+  const isEmpty = useMemo(() => {
+    if (title.trim().length > 0) {
+      return false;
+    }
+    return kind === 'text' ? text.trim().length === 0 : strokes.length === 0;
+  }, [title, kind, text, strokes]);
 
   // --- persistence ---
-  const buildPayload = useCallback(
-    () => ({
+  const buildPayload = useCallback(() => {
+    const doc: NoteDoc = kind === 'text' ? { kind: 'text', text } : { kind: 'drawing', strokes };
+    return {
       title: title.trim(),
-      content: JSON.stringify(blocks),
-      plainText: blocksToPlainText(blocks),
+      content: JSON.stringify(doc),
+      plainText: kind === 'text' ? text.trim() : '',
       color,
-    }),
-    [title, blocks, color],
-  );
+    };
+  }, [kind, text, strokes, title, color]);
 
   const ensureSaved = useCallback(async (): Promise<string | null> => {
     const payload = buildPayload();
@@ -259,154 +222,111 @@ export default function NoteEditorScreen() {
         </View>
       )}
 
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView
-          scrollEnabled={scrollEnabled}
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={styles.content}>
+      <TextInput
+        value={title}
+        onChangeText={setTitle}
+        placeholder="Title"
+        placeholderTextColor={placeholderColor}
+        style={[styles.title, { color: contentColor }]}
+        multiline
+      />
+
+      {kind === 'text' ? (
+        <KeyboardAvoidingView
+          style={styles.flex}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <TextInput
-            value={title}
-            onChangeText={setTitle}
-            placeholder="Title"
-            placeholderTextColor={color ? '#6B7280' : theme.textSecondary}
-            style={[styles.title, { color: contentColor }]}
+            value={text}
+            onChangeText={setText}
+            placeholder="Start writing…"
+            placeholderTextColor={placeholderColor}
+            style={[styles.body, { color: contentColor }]}
             multiline
+            textAlignVertical="top"
           />
-
-          {blocks.map((block) =>
-            block.type === 'text' ? (
-              <TextBlockEditor
-                key={block.id}
-                block={block}
-                color={contentColor}
-                placeholderColor={color ? '#6B7280' : theme.textSecondary}
-                onChange={(text) => updateText(block.id, text)}
-                onRemove={blocks.length > 1 ? () => removeBlock(block.id) : undefined}
-              />
-            ) : (
-              <DrawingBlockEditor
-                key={block.id}
-                block={block}
-                penColor={penColor}
-                penWidth={penWidth}
-                onStrokes={(strokes) => updateStrokes(block.id, strokes)}
-                onActiveChange={(active) => setScrollEnabled(!active)}
-                onUndo={() => undoStroke(block.id)}
-                onRemove={() => removeBlock(block.id)}
-              />
-            ),
-          )}
-
-          <View style={styles.addRow}>
-            <ToolButton label="＋ Text" color={contentColor} onPress={addTextBlock} />
-            <ToolButton label="＋ Drawing" color={contentColor} onPress={addDrawingBlock} />
-          </View>
-
-          {hasDrawing && (
-            <View style={styles.penBar}>
-              <View style={styles.penGroup}>
-                {PenColors.map((c) => (
-                  <Pressable
-                    key={c}
-                    onPress={() => setPenColor(c)}
-                    style={[
-                      styles.penColor,
-                      { backgroundColor: c, borderColor: theme.backgroundSelected },
-                      penColor === c && styles.penSelected,
-                    ]}
-                  />
-                ))}
-              </View>
-              <View style={styles.penGroup}>
-                {PenWidths.map((w) => (
-                  <Pressable
-                    key={w}
-                    onPress={() => setPenWidth(w)}
-                    style={[
-                      styles.penWidth,
-                      { borderColor: theme.backgroundSelected },
-                      penWidth === w && { backgroundColor: theme.backgroundSelected },
-                    ]}>
-                    <View style={{ width: w * 2, height: w * 2, borderRadius: w, backgroundColor: contentColor }} />
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-          )}
-        </ScrollView>
-      </KeyboardAvoidingView>
+        </KeyboardAvoidingView>
+      ) : (
+        <DrawingNoteBody
+          strokes={strokes}
+          onChangeStrokes={setStrokes}
+          contentColor={contentColor}
+          dividerColor={theme.backgroundSelected}
+        />
+      )}
     </SafeAreaView>
   );
 }
 
-function TextBlockEditor({
-  block,
-  color,
-  placeholderColor,
-  onChange,
-  onRemove,
-}: {
-  block: TextBlock;
-  color: string;
-  placeholderColor: string;
-  onChange: (text: string) => void;
-  onRemove?: () => void;
-}) {
-  return (
-    <View style={styles.block}>
-      <TextInput
-        value={block.text}
-        onChangeText={onChange}
-        placeholder="Note"
-        placeholderTextColor={placeholderColor}
-        style={[styles.bodyText, { color }]}
-        multiline
-      />
-      {onRemove && (
-        <Pressable hitSlop={6} onPress={onRemove} style={styles.blockRemove}>
-          <ThemedText type="small" style={{ color: placeholderColor }}>
-            Remove text
-          </ThemedText>
-        </Pressable>
-      )}
-    </View>
-  );
-}
+// --- Drawing note: full-page pad --------------------------------------------
 
-function DrawingBlockEditor({
-  block,
-  penColor,
-  penWidth,
-  onStrokes,
-  onActiveChange,
-  onUndo,
-  onRemove,
+function DrawingNoteBody({
+  strokes,
+  onChangeStrokes,
+  contentColor,
+  dividerColor,
 }: {
-  block: DrawingBlock;
-  penColor: string;
-  penWidth: number;
-  onStrokes: (strokes: Stroke[]) => void;
-  onActiveChange: (active: boolean) => void;
-  onUndo: () => void;
-  onRemove: () => void;
+  strokes: Stroke[];
+  onChangeStrokes: (strokes: Stroke[]) => void;
+  contentColor: string;
+  dividerColor: string;
 }) {
   const theme = useTheme();
+  const [penColor, setPenColor] = useState<string>(PenColors[0]);
+  const [penWidth, setPenWidth] = useState<number>(PenWidths[1]);
+  const [canvasHeight, setCanvasHeight] = useState(0);
+
+  const onLayout = (e: LayoutChangeEvent) => setCanvasHeight(e.nativeEvent.layout.height);
+
   return (
-    <View style={styles.block}>
-      <DrawingCanvas
-        strokes={block.strokes}
-        onChange={onStrokes}
-        color={penColor}
-        strokeWidth={penWidth}
-        height={block.height}
-        onActiveChange={onActiveChange}
-      />
-      <View style={styles.drawingActions}>
-        <ToolButton label="Undo" color={theme.textSecondary} onPress={onUndo} />
-        <ToolButton label="Clear" color={theme.textSecondary} onPress={() => onStrokes([])} />
-        <ToolButton label="Remove" color={theme.textSecondary} onPress={onRemove} />
+    <View style={styles.flex}>
+      <View style={styles.canvasArea} onLayout={onLayout}>
+        {canvasHeight > 0 && (
+          <DrawingCanvas
+            strokes={strokes}
+            onChange={onChangeStrokes}
+            color={penColor}
+            strokeWidth={penWidth}
+            height={canvasHeight}
+          />
+        )}
+      </View>
+
+      <View style={[styles.penBar, { borderTopColor: dividerColor }]}>
+        <View style={styles.penGroup}>
+          {PenColors.map((c) => (
+            <Pressable
+              key={c}
+              onPress={() => setPenColor(c)}
+              style={[
+                styles.penColor,
+                { backgroundColor: c, borderColor: theme.backgroundSelected },
+                penColor === c && styles.penSelected,
+              ]}
+            />
+          ))}
+        </View>
+        <View style={styles.penGroup}>
+          {PenWidths.map((w) => (
+            <Pressable
+              key={w}
+              onPress={() => setPenWidth(w)}
+              style={[
+                styles.penWidth,
+                { borderColor: theme.backgroundSelected },
+                penWidth === w && { backgroundColor: theme.backgroundSelected },
+              ]}>
+              <View style={{ width: w * 2, height: w * 2, borderRadius: w, backgroundColor: contentColor }} />
+            </Pressable>
+          ))}
+        </View>
+        <View style={styles.penGroup}>
+          <ToolButton
+            label="Undo"
+            color={theme.textSecondary}
+            onPress={() => onChangeStrokes(strokes.slice(0, -1))}
+          />
+          <ToolButton label="Clear" color={theme.textSecondary} onPress={() => onChangeStrokes([])} />
+        </View>
       </View>
     </View>
   );
@@ -477,35 +397,22 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: '#208AEF',
   },
-  content: {
-    paddingHorizontal: Spacing.four,
-    paddingBottom: Spacing.six,
-    gap: Spacing.three,
-  },
   title: {
     fontSize: 24,
     fontWeight: 700,
+    paddingHorizontal: Spacing.four,
     paddingVertical: Spacing.one,
   },
-  block: {
-    gap: Spacing.one,
-  },
-  bodyText: {
+  body: {
+    flex: 1,
     fontSize: 16,
     lineHeight: 24,
-    minHeight: 28,
+    paddingHorizontal: Spacing.four,
+    paddingTop: Spacing.two,
   },
-  blockRemove: {
-    alignSelf: 'flex-start',
-  },
-  drawingActions: {
-    flexDirection: 'row',
-    gap: Spacing.four,
-    paddingTop: Spacing.one,
-  },
-  addRow: {
-    flexDirection: 'row',
-    gap: Spacing.four,
+  canvasArea: {
+    flex: 1,
+    paddingHorizontal: Spacing.four,
     paddingTop: Spacing.two,
   },
   penBar: {
@@ -514,7 +421,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexWrap: 'wrap',
     gap: Spacing.three,
-    paddingTop: Spacing.three,
+    paddingHorizontal: Spacing.four,
+    paddingVertical: Spacing.two,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
   penGroup: {
     flexDirection: 'row',
