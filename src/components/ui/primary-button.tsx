@@ -1,7 +1,8 @@
-import { ActivityIndicator, Pressable, StyleSheet, type PressableProps } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, type PressableProps, useColorScheme } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
-import { Spacing } from '@/constants/theme';
+import { BorderRadius, Shadows, Spacing } from '@/constants/theme';
+import { useTheme } from '@/hooks/use-theme';
 
 type PrimaryButtonProps = Omit<PressableProps, 'children'> & {
   title: string;
@@ -9,7 +10,11 @@ type PrimaryButtonProps = Omit<PressableProps, 'children'> & {
 };
 
 export function PrimaryButton({ title, loading, disabled, style, ...rest }: PrimaryButtonProps) {
+  const theme = useTheme();
+  const colorScheme = useColorScheme();
   const isDisabled = disabled || loading;
+
+  const shadowStyle = Shadows[colorScheme === 'dark' ? 'dark' : 'light'].small;
 
   return (
     <Pressable
@@ -17,15 +22,17 @@ export function PrimaryButton({ title, loading, disabled, style, ...rest }: Prim
       disabled={isDisabled}
       style={(state) => [
         styles.button,
+        { backgroundColor: theme.primary },
+        shadowStyle,
         isDisabled && styles.disabled,
         state.pressed && styles.pressed,
         typeof style === 'function' ? style(state) : style,
       ]}
       {...rest}>
       {loading ? (
-        <ActivityIndicator color="#ffffff" />
+        <ActivityIndicator color={theme.onPrimary} />
       ) : (
-        <ThemedText style={styles.label}>{title}</ThemedText>
+        <ThemedText style={[styles.label, { color: theme.onPrimary }]}>{title}</ThemedText>
       )}
     </Pressable>
   );
@@ -33,9 +40,9 @@ export function PrimaryButton({ title, loading, disabled, style, ...rest }: Prim
 
 const styles = StyleSheet.create({
   button: {
-    backgroundColor: '#208AEF',
-    borderRadius: Spacing.two,
+    borderRadius: BorderRadius.pill,
     paddingVertical: Spacing.three,
+    paddingHorizontal: Spacing.four,
     alignItems: 'center',
     justifyContent: 'center',
     width: '100%',
@@ -45,10 +52,10 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.85,
+    transform: [{ scale: 0.98 }], // subtle micro-animation
   },
   label: {
-    color: '#ffffff',
-    fontWeight: 700,
+    fontWeight: '700',
     fontSize: 16,
   },
 });

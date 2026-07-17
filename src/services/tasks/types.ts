@@ -13,9 +13,11 @@ export interface Task {
   totalCount: number;
   createdAt: string;
   updatedAt: string | null;
+  reminderAt: string | null;
 }
 
 export interface SaveTaskPayload {
   title: string;
   items: { id?: string; text: string; isCompleted: boolean }[];
+  reminderAt: string | null;
 }

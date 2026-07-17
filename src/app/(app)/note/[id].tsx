@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Markdown from 'react-native-markdown-display';
 
 import { DrawingCanvas } from '@/components/notes/drawing-canvas';
 import { ThemedText } from '@/components/themed-text';
@@ -39,11 +40,12 @@ function makePayload(
   strokes: Stroke[],
   canvas: DrawingCanvasInfo | null,
   color: string | null,
+  tags: string[],
 ): SaveNotePayload {
   const doc: NoteDoc =
     kind === 'text'
-      ? { kind: 'text', text }
-      : { kind: 'drawing', strokes, ...(canvas ? { canvas } : {}) };
+      ? { kind: 'text', text, tags }
+      : { kind: 'drawing', strokes, ...(canvas ? { canvas } : {}), tags };
   return {
     title: title.trim(),
     content: JSON.stringify(doc),
@@ -75,12 +77,14 @@ export default function NoteEditorScreen() {
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [canvasInfo, setCanvasInfo] = useState<DrawingCanvasInfo | null>(null);
   const [color, setColor] = useState<string | null>(null);
+  const [tagsText, setTagsText] = useState<string>('');
   const [isPinned, setIsPinned] = useState(false);
   const [isArchived, setIsArchived] = useState(false);
   const [isTrashed, setIsTrashed] = useState(false);
 
   const [loading, setLoading] = useState(!isNew);
   const [showColors, setShowColors] = useState(false);
+  const [isPreview, setIsPreview] = useState(false);
 
   // --- persistence ----------------------------------------------------------
   // Saves are serialized through a chain (so a slow create can't race a second
@@ -90,7 +94,8 @@ export default function NoteEditorScreen() {
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
   const discardRef = useRef(false);
 
-  const payload = makePayload(kind, title, text, strokes, canvasInfo, color);
+  const tagsArray = tagsText.split(',').map(t => t.trim()).filter(Boolean);
+  const payload = makePayload(kind, title, text, strokes, canvasInfo, color, tagsArray);
   const payloadRef = useRef(payload);
 
   const saveNow = useCallback((): Promise<void> => {
@@ -146,6 +151,7 @@ export default function NoteEditorScreen() {
           setStrokes(doc.strokes);
           setCanvasInfo(doc.canvas ?? null);
         }
+        setTagsText((doc.tags ?? []).join(', '));
         setTitle(note.title);
         setColor(note.color);
         setIsPinned(note.isPinned);
@@ -160,6 +166,7 @@ export default function NoteEditorScreen() {
             doc.kind === 'drawing' ? doc.strokes : [],
             doc.kind === 'drawing' ? (doc.canvas ?? null) : null,
             note.color,
+            doc.tags ?? []
           ),
         );
       } catch {
@@ -287,6 +294,11 @@ export default function NoteEditorScreen() {
             </>
           ) : (
             <>
+              {kind === 'text' && (
+                <Pressable hitSlop={8} onPress={() => setIsPreview((s) => !s)} style={styles.toolButton}>
+                  <Icon name={isPreview ? 'edit' : 'eye'} size={20} color={contentColor} />
+                </Pressable>
+              )}
               <Pressable hitSlop={8} onPress={togglePin} style={styles.toolButton}>
                 <Icon name="pin" size={20} color={contentColor} style={{ opacity: isPinned ? 1 : 0.35 }} />
               </Pressable>
@@ -334,19 +346,35 @@ export default function NoteEditorScreen() {
         multiline
       />
 
+      <TextInput
+        value={tagsText}
+        onChangeText={setTagsText}
+        placeholder="Tags (comma separated)"
+        placeholderTextColor={placeholderColor}
+        style={[styles.tagsInput, { color: contentColor }]}
+      />
+
       {kind === 'text' ? (
         <KeyboardAvoidingView
           style={styles.flex}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <TextInput
-            value={text}
-            onChangeText={setText}
-            placeholder="Start writing…"
-            placeholderTextColor={placeholderColor}
-            style={[styles.body, { color: contentColor }]}
-            multiline
-            textAlignVertical="top"
-          />
+          {isPreview ? (
+            <ScrollView style={styles.previewContainer} contentContainerStyle={styles.previewContent}>
+              <Markdown style={{ body: { color: contentColor, fontSize: 16 } }}>
+                {text || '*No content to preview*'}
+              </Markdown>
+            </ScrollView>
+          ) : (
+            <TextInput
+              value={text}
+              onChangeText={setText}
+              placeholder="Start writing…"
+              placeholderTextColor={placeholderColor}
+              style={[styles.body, { color: contentColor }]}
+              multiline
+              textAlignVertical="top"
+            />
+          )}
         </KeyboardAvoidingView>
       ) : (
         <DrawingNoteBody
@@ -522,9 +550,15 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 24,
-    fontWeight: 700,
+    fontWeight: '700',
     paddingHorizontal: Spacing.four,
     paddingVertical: Spacing.one,
+  },
+  tagsInput: {
+    fontSize: 14,
+    paddingHorizontal: Spacing.four,
+    paddingBottom: Spacing.two,
+    fontStyle: 'italic',
   },
   body: {
     flex: 1,
@@ -532,6 +566,14 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     paddingHorizontal: Spacing.four,
     paddingTop: Spacing.two,
+  },
+  previewContainer: {
+    flex: 1,
+  },
+  previewContent: {
+    paddingHorizontal: Spacing.four,
+    paddingTop: Spacing.two,
+    paddingBottom: Spacing.six,
   },
   canvasArea: {
     flex: 1,

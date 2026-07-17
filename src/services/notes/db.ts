@@ -59,6 +59,12 @@ async function openAndInit(): Promise<SQLite.SQLiteDatabase> {
     );
     CREATE INDEX IF NOT EXISTS idx_notes_user ON notes (userId);
     CREATE INDEX IF NOT EXISTS idx_notes_remote ON notes (remoteId);
+
+    CREATE TABLE IF NOT EXISTS task_reminders (
+      taskId TEXT PRIMARY KEY NOT NULL,
+      reminderAt TEXT NOT NULL,
+      notificationId TEXT
+    );
   `);
   return db;
 }

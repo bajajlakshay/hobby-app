@@ -99,14 +99,15 @@ export default function SettingsScreen() {
   );
 }
 
+import { Card } from '@/components/ui/card';
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  const theme = useTheme();
   return (
     <View style={styles.section}>
       <ThemedText type="smallBold" themeColor="textSecondary" style={styles.sectionTitle}>
         {title}
       </ThemedText>
-      <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>{children}</View>
+      <Card style={styles.cardPaddingOverride}>{children}</Card>
     </View>
   );
 }
@@ -171,8 +172,8 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
     fontSize: 12,
   },
-  card: {
-    borderRadius: Spacing.three,
+  cardPaddingOverride: {
+    padding: 0,
     overflow: 'hidden',
   },
   row: {

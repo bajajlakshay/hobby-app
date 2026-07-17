@@ -5,6 +5,7 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   TextInput,
   View,
@@ -14,10 +15,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { NoteCard } from '@/components/notes/note-card';
 import { Icon } from '@/components/ui/icon';
-import { BottomTabInset, Spacing } from '@/constants/theme';
+import { BlurLoader } from '@/components/ui/blur-loader';
+import { BottomTabInset, BorderRadius, Shadows, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotesApi } from '@/services/notes/notes-api';
-import type { Note, NoteKind, NoteView } from '@/services/notes/types';
+import { parseNote, type Note, type NoteKind, type NoteView } from '@/services/notes/types';
 
 const VIEWS: NoteView[] = ['Active', 'Archived', 'Trash'];
 
@@ -65,9 +67,28 @@ export default function NotesListScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
+
   // Show the full-screen spinner only for the very first load; later reloads
   // (search, view change, background sync) swap the list silently.
   const loadedOnce = useRef(false);
+
+  const allTags = useMemo(() => {
+    const tags = new Set<string>();
+    for (const n of notes) {
+      const doc = parseNote(n.content);
+      doc.tags?.forEach(t => tags.add(t));
+    }
+    return Array.from(tags).sort();
+  }, [notes]);
+
+  const filteredNotes = useMemo(() => {
+    if (!selectedTag) return notes;
+    return notes.filter(n => {
+      const doc = parseNote(n.content);
+      return doc.tags?.includes(selectedTag);
+    });
+  }, [notes, selectedTag]);
 
   function createNote(kind: NoteKind) {
     setShowCreate(false);
@@ -145,39 +166,83 @@ export default function NotesListScreen() {
         onChangeText={setSearch}
         placeholder="Search notes"
         placeholderTextColor={theme.textSecondary}
-        style={[styles.search, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+        style={[
+          styles.search, 
+          { 
+            color: theme.text, 
+            backgroundColor: theme.backgroundElement,
+            borderColor: theme.backgroundElement,
+          }
+        ]}
         autoCapitalize="none"
         returnKeyType="search"
       />
 
       <View style={styles.filters}>
-        {VIEWS.map((v) => {
-          const active = v === view;
-          return (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: Spacing.two }}>
+          {VIEWS.map((v) => {
+            const active = v === view;
+            return (
+              <Pressable
+                key={v}
+                onPress={() => setView(v)}
+                style={[
+                  styles.chip,
+                  { backgroundColor: active ? theme.text : theme.backgroundElement },
+                ]}>
+                <ThemedText
+                  type="small"
+                  style={{ color: active ? theme.background : theme.textSecondary }}>
+                  {v}
+                </ThemedText>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      {allTags.length > 0 && (
+        <View style={styles.tagsContainer}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: Spacing.two }}>
             <Pressable
-              key={v}
-              onPress={() => setView(v)}
+              onPress={() => setSelectedTag(null)}
               style={[
                 styles.chip,
-                { backgroundColor: active ? theme.text : theme.backgroundElement },
+                { backgroundColor: selectedTag === null ? theme.primary : theme.backgroundElement },
               ]}>
               <ThemedText
                 type="small"
-                style={{ color: active ? theme.background : theme.textSecondary }}>
-                {v}
+                style={{ color: selectedTag === null ? theme.onPrimary : theme.textSecondary }}>
+                All Tags
               </ThemedText>
             </Pressable>
-          );
-        })}
-      </View>
-
-      {loading ? (
-        <View style={styles.center}>
-          <ActivityIndicator color={theme.text} />
+            {allTags.map(tag => {
+              const active = tag === selectedTag;
+              return (
+                <Pressable
+                  key={tag}
+                  onPress={() => setSelectedTag(tag)}
+                  style={[
+                    styles.chip,
+                    { backgroundColor: active ? theme.primary : theme.backgroundElement },
+                  ]}>
+                  <ThemedText
+                    type="small"
+                    style={{ color: active ? theme.onPrimary : theme.textSecondary }}>
+                    #{tag}
+                  </ThemedText>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
         </View>
-      ) : (
-        <FlatList
-          data={notes}
+      )}
+
+      {/* Overlay loader when initially loading */}
+      {loading && <BlurLoader />}
+
+      <FlatList
+          data={filteredNotes}
           keyExtractor={(n) => n.id}
           contentContainerStyle={styles.list}
           refreshControl={
@@ -200,7 +265,6 @@ export default function NotesListScreen() {
           )}
           ItemSeparatorComponent={() => <View style={{ height: Spacing.three }} />}
         />
-      )}
 
       {showCreate && (
         <Pressable style={styles.dismissOverlay} onPress={() => setShowCreate(false)} />
@@ -229,8 +293,12 @@ export default function NotesListScreen() {
 
       <Pressable
         onPress={() => setShowCreate((s) => !s)}
-        style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}>
-        <Icon name={showCreate ? 'close' : 'add'} size={26} color="#ffffff" />
+        style={({ pressed }) => [
+          styles.fab, 
+          { backgroundColor: theme.primary },
+          pressed && styles.fabPressed
+        ]}>
+        <Icon name={showCreate ? 'close' : 'add'} size={26} color={theme.onPrimary} />
       </Pressable>
     </SafeAreaView>
   );
@@ -248,16 +316,21 @@ const styles = StyleSheet.create({
   },
   search: {
     marginHorizontal: Spacing.four,
-    borderRadius: Spacing.two,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.two,
+    borderRadius: BorderRadius.pill,
+    paddingHorizontal: Spacing.four,
+    paddingVertical: Spacing.three,
     fontSize: 16,
+    borderWidth: 1,
   },
   filters: {
     flexDirection: 'row',
-    gap: Spacing.two,
     paddingHorizontal: Spacing.four,
     paddingVertical: Spacing.three,
+  },
+  tagsContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: Spacing.four,
+    paddingBottom: Spacing.three,
   },
   chip: {
     paddingHorizontal: Spacing.three,
@@ -292,12 +365,8 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#208AEF',
-    shadowColor: '#000',
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
+    backgroundColor: '#6750A4', // Hardcoded primary for fast fix, or we can use theme color in component
+    ...Shadows.light.large,
   },
   fabPressed: {
     opacity: 0.85,

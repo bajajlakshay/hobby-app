@@ -13,7 +13,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { Icon } from '@/components/ui/icon';
-import { BottomTabInset, Spacing } from '@/constants/theme';
+import { Card } from '@/components/ui/card';
+import { BlurLoader } from '@/components/ui/blur-loader';
+import { BottomTabInset, BorderRadius, Shadows, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useTasksApi } from '@/services/tasks/tasks-api';
 import type { Task } from '@/services/tasks/types';
@@ -80,7 +82,14 @@ export default function TasksListScreen() {
         onChangeText={setSearch}
         placeholder="Search tasks"
         placeholderTextColor={theme.textSecondary}
-        style={[styles.search, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+        style={[
+          styles.search, 
+          { 
+            color: theme.text, 
+            backgroundColor: theme.backgroundElement,
+            borderColor: theme.backgroundElement,
+          }
+        ]}
         autoCapitalize="none"
         returnKeyType="search"
       />
@@ -99,12 +108,9 @@ export default function TasksListScreen() {
         </View>
       )}
 
-      {loading ? (
-        <View style={styles.center}>
-          <ActivityIndicator color={theme.text} />
-        </View>
-      ) : (
-        <FlatList
+      {loading && <BlurLoader />}
+
+      <FlatList
           data={tasks}
           keyExtractor={(t) => t.id}
           contentContainerStyle={styles.list}
@@ -127,12 +133,15 @@ export default function TasksListScreen() {
           )}
           ItemSeparatorComponent={() => <View style={{ height: Spacing.three }} />}
         />
-      )}
 
       <Pressable
         onPress={() => router.push('/task/new')}
-        style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}>
-        <Icon name="add" size={26} color="#ffffff" />
+        style={({ pressed }) => [
+          styles.fab, 
+          { backgroundColor: theme.primary },
+          pressed && styles.fabPressed
+        ]}>
+        <Icon name="add" size={26} color={theme.onPrimary} />
       </Pressable>
     </SafeAreaView>
   );
@@ -146,31 +155,32 @@ function TaskRow({ task, onPress }: { task: Task; onPress: () => void }) {
   const allDone = total > 0 && done === total;
 
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.card,
-        { backgroundColor: theme.backgroundElement },
-        pressed && styles.pressed,
-      ]}>
-      <ThemedText type="smallBold" numberOfLines={2}>
-        {task.title.trim().length > 0 ? task.title : 'Untitled task'}
-      </ThemedText>
-
-      <View style={styles.progressRow}>
-        <View style={[styles.track, { backgroundColor: theme.backgroundSelected }]}>
-          <View
-            style={[
-              styles.fill,
-              { width: `${ratio * 100}%`, backgroundColor: allDone ? '#10B981' : '#208AEF' },
-            ]}
-          />
-        </View>
-        <ThemedText type="small" themeColor="textSecondary">
-          {done}/{total}
+    <Card elevationLevel="small" style={{ padding: 0, backgroundColor: theme.card }}>
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => [
+          styles.card,
+          pressed && styles.pressed,
+        ]}>
+        <ThemedText type="smallBold" numberOfLines={2}>
+          {task.title.trim().length > 0 ? task.title : 'Untitled task'}
         </ThemedText>
-      </View>
-    </Pressable>
+
+        <View style={styles.progressRow}>
+          <View style={[styles.track, { backgroundColor: theme.backgroundSelected }]}>
+            <View
+              style={[
+                styles.fill,
+                { width: `${ratio * 100}%`, backgroundColor: allDone ? '#10B981' : theme.primary },
+              ]}
+            />
+          </View>
+          <ThemedText type="small" themeColor="textSecondary">
+            {done}/{total}
+          </ThemedText>
+        </View>
+      </Pressable>
+    </Card>
   );
 }
 
@@ -183,10 +193,11 @@ const styles = StyleSheet.create({
   },
   search: {
     marginHorizontal: Spacing.four,
-    borderRadius: Spacing.two,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.two,
+    borderRadius: BorderRadius.pill,
+    paddingHorizontal: Spacing.four,
+    paddingVertical: Spacing.three,
     fontSize: 16,
+    borderWidth: 1,
   },
   list: {
     paddingHorizontal: Spacing.four,
@@ -242,12 +253,8 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#208AEF',
-    shadowColor: '#000',
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
+    backgroundColor: '#6750A4',
+    ...Shadows.light.large,
   },
   fabPressed: {
     opacity: 0.85,

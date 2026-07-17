@@ -17,6 +17,7 @@ export type NoteKind = 'text' | 'drawing';
 export interface TextNoteDoc {
   kind: 'text';
   text: string;
+  tags?: string[];
 }
 
 /**
@@ -37,6 +38,7 @@ export interface DrawingNoteDoc {
   strokes: Stroke[];
   /** Absent on drawings saved by older app versions (raw device pixels). */
   canvas?: DrawingCanvasInfo;
+  tags?: string[];
 }
 
 export type NoteDoc = TextNoteDoc | DrawingNoteDoc;
@@ -82,6 +84,7 @@ export function parseNote(content: string): NoteDoc {
           kind: 'drawing',
           strokes: Array.isArray(obj.strokes) ? (obj.strokes as Stroke[]) : [],
           ...(canvas ? { canvas } : {}),
+          ...(Array.isArray(obj.tags) ? { tags: obj.tags as string[] } : {}),
         };
       }
       if (obj.kind === 'text') {
@@ -91,7 +94,11 @@ export function parseNote(content: string): NoteDoc {
           : typeof obj.markdown === 'string'
             ? obj.markdown
             : '';
-        return { kind: 'text', text: body };
+        return { 
+          kind: 'text', 
+          text: body,
+          ...(Array.isArray(obj.tags) ? { tags: obj.tags as string[] } : {}), 
+        };
       }
     }
 

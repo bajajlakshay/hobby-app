@@ -17,7 +17,7 @@ import { confirmDestructive } from '@/components/ui/confirm';
 import { Icon } from '@/components/ui/icon';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { useTasksApi } from '@/services/tasks/tasks-api';
+import { useTasksApi, getLocalReminder, setLocalReminder } from '@/services/tasks/tasks-api';
 import type { ChecklistItem, SaveTaskPayload } from '@/services/tasks/types';
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -27,14 +27,13 @@ const AUTOSAVE_MS = 1200;
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
-function makePayload(title: string, items: ChecklistItem[]): SaveTaskPayload {
-  return {
-    title: title.trim(),
-    items: items
-      .filter((i) => i.text.trim().length > 0)
-      .map((i) => ({ id: i.id, text: i.text.trim(), isCompleted: i.isCompleted })),
-  };
-}
+const makePayload = (t: string, it: ChecklistItem[], rem: string | null): SaveTaskPayload => ({
+  title: t.trim(),
+  items: it
+    .filter((i) => i.text.trim().length > 0)
+    .map((i) => ({ id: i.id, text: i.text.trim(), isCompleted: i.isCompleted })),
+  reminderAt: rem,
+});
 
 function payloadIsEmpty(payload: SaveTaskPayload): boolean {
   return payload.title.length === 0 && payload.items.length === 0;
@@ -52,6 +51,7 @@ export default function TaskEditorScreen() {
   const [items, setItems] = useState<ChecklistItem[]>([]);
   const [loading, setLoading] = useState(!isNew);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const [reminderAt, setReminderAt] = useState<string | null>(null);
 
   // --- persistence ----------------------------------------------------------
   // Tasks save to the server (unlike notes there's no offline store), so saves
@@ -61,37 +61,41 @@ export default function TaskEditorScreen() {
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
   const discardRef = useRef(false);
 
-  const payload = makePayload(title, items);
-  const payloadRef = useRef(payload);
+  const doSave = async (
+    t: string,
+    it: ChecklistItem[],
+    rem: string | null,
+    onSuccess?: () => void
+  ) => {
+    if (saveStatus === 'saving') return;
+    setSaveStatus('saving');
+    try {
+      const payload = makePayload(t, it, rem);
+      if (isNew && !taskIdRef.current) {
+        if (payloadIsEmpty(payload)) {
+          setSaveStatus('idle');
+          return;
+        }
+        const created = await api.create(payload);
+        taskIdRef.current = created.id;
+      } else if (taskIdRef.current) {
+        await api.update(taskIdRef.current, payload);
+      }
+      lastSavedRef.current = JSON.stringify(payload);
+      setSaveStatus('saved');
+      onSuccess?.();
+    } catch (error) {
+      setSaveStatus('error');
+      throw error;
+    }
+  };
 
-  const saveNow = useCallback((): Promise<void> => {
+  const saveNow = useCallback(async (): Promise<void> => {
     const run = async () => {
       if (discardRef.current) {
         return;
       }
-      const current = payloadRef.current;
-      const serialized = JSON.stringify(current);
-      if (serialized === lastSavedRef.current) {
-        return;
-      }
-      setSaveStatus('saving');
-      try {
-        if (taskIdRef.current) {
-          await api.update(taskIdRef.current, current);
-        } else {
-          if (payloadIsEmpty(current)) {
-            setSaveStatus('idle');
-            return;
-          }
-          const created = await api.create(current);
-          taskIdRef.current = created.id;
-        }
-        lastSavedRef.current = serialized;
-        setSaveStatus('saved');
-      } catch (error) {
-        setSaveStatus('error');
-        throw error;
-      }
+      await doSave(title, items, reminderAt);
     };
     const next = saveChainRef.current.then(run, run);
     saveChainRef.current = next.catch(() => {});
@@ -99,10 +103,11 @@ export default function TaskEditorScreen() {
   }, [api]);
 
   const saveNowRef = useRef(saveNow);
+  const payload = makePayload(title, items, reminderAt);
+
   useEffect(() => {
-    payloadRef.current = payload;
     saveNowRef.current = saveNow;
-  });
+  }, [saveNow]);
 
   useEffect(() => {
     if (isNew) {
@@ -117,7 +122,16 @@ export default function TaskEditorScreen() {
         }
         setTitle(task.title);
         setItems(task.items);
-        lastSavedRef.current = JSON.stringify(makePayload(task.title, task.items));
+        lastSavedRef.current = JSON.stringify(makePayload(task.title, task.items, task.reminderAt));
+        
+        // Also ensure local notification state matches backend if available
+        if (task.reminderAt) {
+          setReminderAt(task.reminderAt);
+          await setLocalReminder(id, new Date(task.reminderAt), task.title);
+        } else {
+          const r = await getLocalReminder(id);
+          setReminderAt(r);
+        }
       } catch {
         router.back();
       } finally {
@@ -209,6 +223,16 @@ export default function TaskEditorScreen() {
     }
   };
 
+  const scheduleReminder = async (minutes: number) => {
+    if (!taskIdRef.current) return;
+    const d = new Date();
+    d.setMinutes(d.getMinutes() + minutes);
+    await setLocalReminder(taskIdRef.current, d, title);
+    setReminderAt(d.toISOString());
+    // Auto-save so the backend knows about the reminder immediately
+    await doSave(title, items, d.toISOString());
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={[styles.flex, styles.center, { backgroundColor: theme.background }]}>
@@ -244,6 +268,25 @@ export default function TaskEditorScreen() {
             style={[styles.title, { color: theme.text }]}
             multiline
           />
+
+          {!isNew && (
+            <View style={styles.reminderRow}>
+              {reminderAt ? (
+                <ThemedText type="small" themeColor="textSecondary">
+                  Reminder set for: {new Date(reminderAt).toLocaleString()}
+                </ThemedText>
+              ) : (
+                <>
+                  <Pressable onPress={() => scheduleReminder(1)} style={styles.chip}>
+                    <ThemedText type="small" themeColor="textSecondary">Remind in 1m (Test)</ThemedText>
+                  </Pressable>
+                  <Pressable onPress={() => scheduleReminder(60)} style={styles.chip}>
+                    <ThemedText type="small" themeColor="textSecondary">Remind in 1h</ThemedText>
+                  </Pressable>
+                </>
+              )}
+            </View>
+          )}
 
           {total > 0 && (
             <View style={styles.progressRow}>
@@ -354,8 +397,20 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 24,
-    fontWeight: 700,
+    fontWeight: '700',
     paddingVertical: Spacing.one,
+  },
+  reminderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  chip: {
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.one,
+    borderRadius: Spacing.two,
+    borderWidth: 1,
+    borderColor: '#ccc',
   },
   progressRow: {
     flexDirection: 'row',

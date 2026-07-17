@@ -4,6 +4,7 @@ import Svg, { Path } from 'react-native-svg';
 import { pointsToPath } from '@/components/notes/drawing-canvas';
 import { ThemedText } from '@/components/themed-text';
 import { Icon } from '@/components/ui/icon';
+import { Card } from '@/components/ui/card';
 import { NoteColoredTextColor } from '@/constants/notes';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
@@ -20,24 +21,32 @@ type NoteCardProps = {
   showPin?: boolean;
 };
 
+function stripMarkdown(text: string) {
+  return text
+    .replace(/[#_*~`>]/g, '') // remove markdown symbols
+    .replace(/\[(.*?)\]\(.*?\)/g, '$1') // replace links with just the link text
+    .trim();
+}
+
 export function NoteCard({ note, onPress, onTogglePin, showPin = true }: NoteCardProps) {
   const theme = useTheme();
 
-  const backgroundColor = note.color ?? theme.backgroundElement;
+  const backgroundColor = note.color ?? theme.card;
   const textColor = note.color ? NoteColoredTextColor : theme.text;
   const mutedColor = note.color ? NoteColoredTextColor : theme.textSecondary;
 
   const doc = parseNote(note.content);
   const hasTitle = note.title.trim().length > 0;
-  const preview = doc.kind === 'text' ? doc.text.trim() : '';
+  const preview = doc.kind === 'text' ? stripMarkdown(doc.text) : '';
   const isEmpty =
     !hasTitle && (doc.kind === 'text' ? preview.length === 0 : doc.strokes.length === 0);
 
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [styles.card, { backgroundColor }, pressed && styles.pressed]}>
-      <View style={styles.headerRow}>
+    <Card elevationLevel="small" style={{ padding: 0, backgroundColor }}>
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
+        <View style={styles.headerRow}>
         {hasTitle ? (
           <ThemedText type="smallBold" style={[styles.title, { color: textColor }]} numberOfLines={2}>
             {note.title}
@@ -73,7 +82,8 @@ export function NoteCard({ note, onPress, onTogglePin, showPin = true }: NoteCar
           Empty note
         </ThemedText>
       )}
-    </Pressable>
+      </Pressable>
+    </Card>
   );
 }
 
