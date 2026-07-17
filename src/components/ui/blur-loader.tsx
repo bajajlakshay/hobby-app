@@ -1,6 +1,5 @@
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, useColorScheme, View } from 'react-native';
 import { GlassView } from 'expo-glass-effect';
-import { useColorScheme } from 'react-native';
 import { useTheme } from '@/hooks/use-theme';
 import { BorderRadius } from '@/constants/theme';
 
@@ -10,10 +9,9 @@ export function BlurLoader() {
 
   return (
     <View style={styles.container}>
-      <GlassView 
-        style={styles.blurView} 
-        tint={colorScheme === 'dark' ? 'dark' : 'light'} 
-        intensity={60}
+      <GlassView
+        style={styles.blurView}
+        colorScheme={colorScheme === 'dark' ? 'dark' : 'light'}
       >
         <View style={[styles.indicatorContainer, { backgroundColor: theme.card }]}>
           <ActivityIndicator size="large" color={theme.primary} />
@@ -25,7 +23,11 @@ export function BlurLoader() {
 
 const styles = StyleSheet.create({
   container: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     zIndex: 9999,
   },
   blurView: {

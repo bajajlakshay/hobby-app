@@ -24,6 +24,8 @@ const ICONS = {
   textNote: { ios: 'doc.text', android: 'text_snippet', web: 'text_snippet' },
   drawing: { ios: 'scribble', android: 'stylus_note', web: 'stylus_note' },
   undo: { ios: 'arrow.uturn.backward', android: 'undo', web: 'undo' },
+  eye: { ios: 'eye', android: 'visibility', web: 'visibility' },
+  edit: { ios: 'pencil', android: 'edit', web: 'edit' },
 } as const satisfies Record<string, SymbolViewProps['name']>;
 
 export type IconName = keyof typeof ICONS;

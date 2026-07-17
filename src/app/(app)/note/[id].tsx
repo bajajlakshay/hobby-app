@@ -6,6 +6,7 @@ import {
   type LayoutChangeEvent,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   TextInput,
   View,

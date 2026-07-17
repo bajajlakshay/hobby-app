@@ -26,7 +26,10 @@ export async function setLocalReminder(taskId: string, date: Date, title: string
       title: 'Task Reminder',
       body: title || 'You have a pending task to complete!',
     },
-    trigger: date,
+    trigger: {
+      type: Notifications.SchedulableTriggerInputTypes.DATE,
+      date,
+    },
   });
 
   await db.runAsync('INSERT OR REPLACE INTO task_reminders (taskId, reminderAt, notificationId) VALUES (?, ?, ?)', [taskId, date.toISOString(), id]);

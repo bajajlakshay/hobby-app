@@ -61,27 +61,27 @@ export default function TaskEditorScreen() {
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
   const discardRef = useRef(false);
 
+  const payload = makePayload(title, items, reminderAt);
+  const payloadRef = useRef(payload);
+
   const doSave = async (
-    t: string,
-    it: ChecklistItem[],
-    rem: string | null,
+    currentPayload: SaveTaskPayload,
     onSuccess?: () => void
   ) => {
     if (saveStatus === 'saving') return;
     setSaveStatus('saving');
     try {
-      const payload = makePayload(t, it, rem);
       if (isNew && !taskIdRef.current) {
-        if (payloadIsEmpty(payload)) {
+        if (payloadIsEmpty(currentPayload)) {
           setSaveStatus('idle');
           return;
         }
-        const created = await api.create(payload);
+        const created = await api.create(currentPayload);
         taskIdRef.current = created.id;
       } else if (taskIdRef.current) {
-        await api.update(taskIdRef.current, payload);
+        await api.update(taskIdRef.current, currentPayload);
       }
-      lastSavedRef.current = JSON.stringify(payload);
+      lastSavedRef.current = JSON.stringify(currentPayload);
       setSaveStatus('saved');
       onSuccess?.();
     } catch (error) {
@@ -95,7 +95,12 @@ export default function TaskEditorScreen() {
       if (discardRef.current) {
         return;
       }
-      await doSave(title, items, reminderAt);
+      const current = payloadRef.current;
+      const serialized = JSON.stringify(current);
+      if (serialized === lastSavedRef.current) {
+        return;
+      }
+      await doSave(current);
     };
     const next = saveChainRef.current.then(run, run);
     saveChainRef.current = next.catch(() => {});
@@ -103,11 +108,11 @@ export default function TaskEditorScreen() {
   }, [api]);
 
   const saveNowRef = useRef(saveNow);
-  const payload = makePayload(title, items, reminderAt);
 
   useEffect(() => {
+    payloadRef.current = payload;
     saveNowRef.current = saveNow;
-  }, [saveNow]);
+  });
 
   useEffect(() => {
     if (isNew) {
@@ -230,7 +235,7 @@ export default function TaskEditorScreen() {
     await setLocalReminder(taskIdRef.current, d, title);
     setReminderAt(d.toISOString());
     // Auto-save so the backend knows about the reminder immediately
-    await doSave(title, items, d.toISOString());
+    await doSave(makePayload(title, items, d.toISOString()));
   };
 
   if (loading) {
